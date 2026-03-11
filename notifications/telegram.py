@@ -37,46 +37,35 @@ def stuur_melding(pand: dict, metrics: dict, ai_analyse: dict, config) -> bool:
     kansen_tekst = "\n".join([f"  • {k}" for k in ai_analyse.get("kansen", [])[:3]])
     risicos_tekst = "\n".join([f"  • {r}" for r in ai_analyse.get("risicos", [])[:2]])
 
-    # Telegram MarkdownV2 vereist escapen van speciale tekens
-    def esc(tekst):
-        if not tekst:
-            return ""
-        for c in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
-            tekst = str(tekst).replace(c, f'\\{c}')
-        return tekst
+    bericht = f"""{emoji} IMMO ALERT - {aanbeveling.replace('_', ' ')}
 
-    bericht = f"""{emoji} *IMMO ALERT \\- {esc(aanbeveling.replace('_', ' '))}*
+📍 {pand.get('gemeente', '?')} - {pand.get('postcode', '?')}
+{pand.get('straat', '')} {pand.get('huisnummer', '')}
 
-📍 *{esc(pand.get('gemeente', '?'))} \\- {esc(pand.get('postcode', '?'))}*
-{esc(pand.get('straat', ''))} {esc(pand.get('huisnummer', ''))}
+🏠 {pand.get('type', '?')} | {pand.get('bewoonbare_opp', 0)}m2 woning | {pand.get('perceel_opp', 0)}m2 perceel
+💶 Prijs: EUR {pand.get('prijs', 0):,}
+🛏 {pand.get('slaapkamers', 0)} slaapkamers | EPC: {pand.get('epc_score', '?')}
 
-🏠 {esc(pand.get('type', '?'))} \\| {esc(pand.get('bewoonbare_opp', 0))}m² woning \\| {esc(pand.get('perceel_opp', 0))}m² perceel
-💶 *Prijs: €{esc(f"{pand.get('prijs', 0):,}")}*
-🛏️ {esc(pand.get('slaapkamers', 0))} slaapkamers \\| EPC: {esc(pand.get('epc_score', '?'))}
+📊 FINANCIEEL OVERZICHT
 
-━━━━━━━━━━━━━━━━━━━━
-📊 *FINANCIEEL OVERZICHT*
+Aankoopkost: EUR {metrics.get('totale_aankoopkost', 0):,}
+Bruto rendement: {metrics.get('bruto_rendement', 0)}%
+Projectmarge: {metrics.get('project_marge', 0)}%
+Geschat {metrics.get('geschat_aantal_appartementen', 0)} appartementen mogelijk
 
-💸 Aankoopkost: €{esc(str(metrics.get('totale_aankoopkost', 0)))}
-📈 Bruto rendement: *{esc(metrics.get('bruto_rendement', 0))}%*
-🏗️ Projectmarge: *{esc(metrics.get('project_marge', 0))}%*
-🏢 Geschat {esc(metrics.get('geschat_aantal_appartementen', 0))} appartementen mogelijk
+🤖 AI BEOORDELING
 
-━━━━━━━━━━━━━━━━━━━━
-🤖 *AI BEOORDELING*
+{ai_analyse.get('korte_uitleg', '')}
 
-{esc(ai_analyse.get('korte_uitleg', ''))}
+Beste strategie: {strategie}
+Prioriteit: {ai_analyse.get('prioriteit', 5)}/10
 
-💡 Beste strategie: *{esc(strategie)}*
-⭐ Prioriteit: {esc(ai_analyse.get('prioriteit', 5))}/10
+Kansen:
+{kansen_tekst}
 
-✅ *Kansen:*
-{esc(kansen_tekst)}
+Risicos:
+{risicos_tekst}
 
-⚠️ *Risico's:*
-{esc(risicos_tekst)}
-
-━━━━━━━━━━━━━━━━━━━━
 🔗 {pand.get('url', '')}"""
 
     return _verstuur_bericht(bericht, config)
@@ -84,7 +73,7 @@ def stuur_melding(pand: dict, metrics: dict, ai_analyse: dict, config) -> bool:
 
 def stuur_opstart_bericht(config) -> bool:
     """Stuurt een testbericht bij opstart."""
-    bericht = "🚀 *Immo Scanner gestart\\!*\n\nIk ga nu automatisch Immoweb in de gaten houden en u verwittigen bij interessante panden\\."
+    bericht = "🚀 Immo Scanner gestart!\n\nIk ga nu automatisch Immoweb in de gaten houden en u verwittigen bij interessante panden."
     return _verstuur_bericht(bericht, config)
 
 
@@ -97,7 +86,6 @@ def _verstuur_bericht(tekst: str, config) -> bool:
     payload = {
         "chat_id": config.TELEGRAM_CHAT_ID,
         "text": tekst,
-        "parse_mode": "MarkdownV2",
         "disable_web_page_preview": False,
     }
 
