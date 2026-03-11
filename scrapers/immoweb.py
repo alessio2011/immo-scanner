@@ -125,4 +125,5 @@ def verwerk_pand(pand_data: dict) -> dict:
         "garage": property_data.get("parkingCountOutdoor", 0) + property_data.get("parkingCountIndoor", 0),
         "publicatie_datum": pand_data.get("publicationDate", ""),
         "foto_url": pand_data.get("media", {}).get("pictures", [{}])[0].get("largeUrl", "") if pand_data.get("media", {}).get("pictures") else "",
+        "alle_fotos": [p.get("largeUrl", "") for p in pand_data.get("media", {}).get("pictures", [])[:4] if p.get("largeUrl")],
     }

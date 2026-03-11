@@ -17,11 +17,70 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"  # Krachtig gratis model van Groq
 
 
+def analyseer_fotos(foto_urls: list, api_key: str) -> str:
+    """
+    Laat Groq de foto's van het pand analyseren.
+    Geeft een tekstbeschrijving terug van de staat van het pand.
+    """
+    if not foto_urls:
+        return "Geen foto's beschikbaar."
+
+    # Gebruik max 3 foto's
+    urls_te_analyseren = foto_urls[:3]
+
+    prompt = f"""Bekijk deze foto's van een vastgoedobject en beschrijf in max 3 zinnen:
+1. De zichtbare staat van het pand (goed, matig, slecht)
+2. Wat er zichtbaar gerenoveerd moet worden
+3. Of het eerder een sloopkandidaat of renovatiekandidaat lijkt
+
+Foto URLs: {', '.join(urls_te_analyseren)}
+
+Antwoord in het Nederlands, max 3 zinnen, zeer concreet."""
+
+    try:
+        response = requests.post(
+            GROQ_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": GROQ_MODEL,
+                "max_tokens": 300,
+                "temperature": 0.2,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            },
+            timeout=20
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            return data["choices"][0]["message"]["content"].strip()
+        else:
+            return "Fotoanalyse niet beschikbaar."
+
+    except Exception as e:
+        logger.debug(f"Fotoanalyse mislukt: {e}")
+        return "Fotoanalyse niet beschikbaar."
+
+
 def analyseer_pand_met_ai(pand: dict, metrics: dict, api_key: str) -> dict:
     """
     Stuurt pand info naar Groq (Llama) voor een expertbeoordeling.
     Geeft een dict terug met: aanbeveling, uitleg, risicos, kansen
     """
+
+    # Analyseer foto's
+    foto_urls = pand.get("alle_fotos", [])
+    if not foto_urls and pand.get("foto_url"):
+        foto_urls = [pand.get("foto_url")]
+    foto_analyse = analyseer_fotos(foto_urls, api_key)
+    logger.info(f"Fotoanalyse: {foto_analyse[:80]}...")
 
     # Haal lessen op uit eerdere feedback
     lessen = genereer_lessen_voor_ai()
@@ -41,6 +100,9 @@ Je bent kritisch, realistisch en denkt altijd aan de werkelijke winstgevendheid.
 {locatie_context}
 
 {lessen}
+
+=== FOTOANALYSE ===
+{foto_analyse}
 
 === PAND INFORMATIE ===
 Type: {pand.get('type', 'onbekend')} - {pand.get('subtype', '')}
@@ -65,7 +127,8 @@ VERHUURSCENARIO:
 - Netto rendement (na kosten): {metrics.get('netto_rendement', 0)}%
 
 PROJECTONTWIKKELING (sloop/herbouw):
-- Geschat aantal appartementen: {metrics.get('geschat_aantal_appartementen', 0)}
+- Geschat aantal appartementen: {metrics.get('geschat_aantal_appartementen', 0)} ({metrics.get('app_schatting_uitleg', '')})
+- OPGELET: Dit is een schatting op basis van Belgische bouwregels. Werkelijk aantal hangt af van stedenbouwkundig attest.
 - Geschatte verkoopopbrengst: EUR {metrics.get('geschatte_verkoopopbrengst', 0):,}
 - Totale projectkosten: EUR {metrics.get('totale_projectkosten', 0):,}
 - Geschatte winst: EUR {metrics.get('project_winst', 0):,}
