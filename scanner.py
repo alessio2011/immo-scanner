@@ -1,6 +1,11 @@
 """
 IMMO SCANNER - Hoofdscript
-Draait automatisch op de Raspberry Pi en scant Immoweb
+Draait dag en nacht op de Raspberry Pi.
+
+Werking:
+- Elke 30 min: Immoweb scrapen → nieuwe panden in wachtrij
+- Elke 60 sec: 1 pand uit wachtrij analyseren met AI → nooit rate limit
+- Feedback van Telegram knoppen verwerken bij elke cyclus
 """
 
 import sys
@@ -8,11 +13,9 @@ import os
 import time
 import json
 import logging
-import hashlib
 from datetime import datetime
 from pathlib import Path
 
-# Voeg project root toe aan path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
@@ -22,7 +25,6 @@ from analysis.ai_analyse import analyseer_pand_met_ai
 from notifications.telegram import stuur_melding, stuur_opstart_bericht, verwerk_feedback_updates
 from analysis.feedback import sla_pand_op_voor_feedback, haal_pand_op_voor_feedback, sla_feedback_op
 
-# --- LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -33,35 +35,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Bestand om al geziene panden bij te houden
-GEZIEN_BESTAND = Path("geziene_panden.json")
+GEZIEN_BESTAND   = Path("geziene_panden.json")
+WACHTRIJ_BESTAND = Path("ai_wachtrij.json")
 
+
+# ─── HULPFUNCTIES ────────────────────────────────────────────────────────────
 
 def laad_geziene_panden() -> set:
-    """Laadt de lijst van al geziene pand IDs."""
     if GEZIEN_BESTAND.exists():
-        with open(GEZIEN_BESTAND, "r") as f:
-            data = json.load(f)
-            return set(data.get("ids", []))
+        with open(GEZIEN_BESTAND) as f:
+            return set(json.load(f).get("ids", []))
     return set()
 
-
 def sla_geziene_panden_op(ids: set):
-    """Slaat de lijst van geziene pand IDs op."""
     with open(GEZIEN_BESTAND, "w") as f:
-        json.dump({"ids": list(ids), "laatste_update": datetime.now().isoformat()}, f)
+        json.dump({"ids": list(ids), "update": datetime.now().isoformat()}, f)
+
+def laad_wachtrij() -> list:
+    if WACHTRIJ_BESTAND.exists():
+        with open(WACHTRIJ_BESTAND) as f:
+            return json.load(f)
+    return []
+
+def sla_wachtrij_op(wachtrij: list):
+    with open(WACHTRIJ_BESTAND, "w") as f:
+        json.dump(wachtrij, f, ensure_ascii=False)
 
 
-def verwerk_nieuwe_panden(geziene_ids: set) -> set:
+# ─── STAP 1: SCRAPEN ─────────────────────────────────────────────────────────
+
+def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list) -> tuple[set, list]:
     """
-    Haalt nieuwe panden op, analyseert ze en stuurt meldingen.
-    Geeft de bijgewerkte set van geziene IDs terug.
+    Haalt nieuwe panden op van Immoweb en zet interessante in de AI wachtrij.
+    Dit is snel en gebruikt geen AI tokens.
     """
-    logger.info("🔍 Scanning Immoweb...")
+    logger.info("🔍 Immoweb scrapen...")
 
-    # Postcodes ophalen (of leeg = heel België)
     postcodes = config.REGIO_POSTCODES if config.REGIO_POSTCODES else [None]
-
     panden = haal_advertenties_op(
         postcodes=postcodes,
         max_prijs=config.MAX_PRIJS,
@@ -69,111 +79,137 @@ def verwerk_nieuwe_panden(geziene_ids: set) -> set:
         max_paginas=getattr(config, 'MAX_PAGINAS', 10)
     )
 
-    logger.info(f"📦 {len(panden)} panden gevonden, filteren...")
-
-    nieuwe_panden = 0
-    interessante_panden = 0
+    nieuwe = 0
+    toegevoegd = 0
 
     for pand_data in panden:
         pand_id = str(pand_data.get("id", ""))
-
         if not pand_id or pand_id in geziene_ids:
             continue
 
         geziene_ids.add(pand_id)
-        nieuwe_panden += 1
+        nieuwe += 1
 
         try:
-            # Verwerk pand data
             pand = verwerk_pand(pand_data)
-
-            # Bereken financiële metrics
             metrics = bereken_metrics(pand)
+            interessant, _ = is_interessant(metrics, config.MIN_RENDEMENT)
 
-            # Voorcheck: is het potentieel interessant?
-            interessant, redenen = is_interessant(metrics, config.MIN_RENDEMENT)
-
-            if not interessant:
-                logger.debug(f"❌ Niet interessant: {pand.get('gemeente')} - €{pand.get('prijs', 0):,}")
-                continue
-
-            logger.info(f"🎯 Potentieel interessant gevonden: {pand.get('gemeente')} - €{pand.get('prijs', 0):,}")
-
-            # AI analyse (alleen voor potentieel interessante panden - bespaart API kosten)
-            ai_analyse = analyseer_pand_met_ai(pand, metrics, config.ANTHROPIC_API_KEY)
-
-            aanbeveling = ai_analyse.get("aanbeveling", "NEUTRAAL")
-
-            if aanbeveling in ["STERK_AAN", "AAN"]:
-                interessante_panden += 1
-                logger.info(f"✅ AI zegt: {aanbeveling} - Melding versturen...")
-                sla_pand_op_voor_feedback(pand_id, pand, metrics, ai_analyse)
-                stuur_melding(pand, metrics, ai_analyse, config)
-                time.sleep(3)  # Kleine pauze tussen berichten
+            if interessant:
+                # Zet in wachtrij voor AI analyse later
+                wachtrij.append({
+                    "pand_id": pand_id,
+                    "pand": pand,
+                    "metrics": metrics,
+                    "toegevoegd": datetime.now().isoformat()
+                })
+                toegevoegd += 1
+                logger.info(f"➕ Wachtrij: {pand.get('gemeente')} €{pand.get('prijs', 0):,}")
 
         except Exception as e:
             logger.error(f"Fout bij verwerken pand {pand_id}: {e}")
 
-    logger.info(f"✅ Scan klaar: {nieuwe_panden} nieuwe panden, {interessante_panden} interessant")
-    return geziene_ids
+    logger.info(f"✅ Scrape klaar: {nieuwe} nieuw, {toegevoegd} in wachtrij (totaal: {len(wachtrij)})")
+    return geziene_ids, wachtrij
 
+
+# ─── STAP 2: AI ANALYSE (1 PER CYCLUS) ───────────────────────────────────────
+
+def analyseer_volgend_pand(wachtrij: list) -> list:
+    """
+    Haalt 1 pand uit de wachtrij en analyseert die met AI.
+    Door 1 per minuut te doen vermijden we de rate limit volledig.
+    """
+    if not wachtrij:
+        return wachtrij
+
+    item = wachtrij.pop(0)  # Eerste uit de rij
+    pand    = item["pand"]
+    metrics = item["metrics"]
+    pand_id = item["pand_id"]
+
+    logger.info(f"🤖 AI analyse: {pand.get('gemeente')} €{pand.get('prijs', 0):,} ({len(wachtrij)} nog in wachtrij)")
+
+    try:
+        ai_analyse = analyseer_pand_met_ai(pand, metrics, config.ANTHROPIC_API_KEY)
+        aanbeveling = ai_analyse.get("aanbeveling", "NEUTRAAL")
+
+        if aanbeveling in ["STERK_AAN", "AAN"]:
+            logger.info(f"✅ {aanbeveling} → melding sturen!")
+            sla_pand_op_voor_feedback(pand_id, pand, metrics, ai_analyse)
+            stuur_melding(pand, metrics, ai_analyse, config)
+        else:
+            logger.info(f"❌ AI: {aanbeveling} → geen melding")
+
+    except Exception as e:
+        logger.error(f"Fout bij AI analyse: {e}")
+        # Bij fout terug in wachtrij zetten
+        wachtrij.insert(0, item)
+        time.sleep(30)  # Extra wachten bij fout
+
+    return wachtrij
+
+
+# ─── HOOFDLUS ─────────────────────────────────────────────────────────────────
 
 def main():
-    """Hoofdlus van de scanner."""
     logger.info("=" * 50)
     logger.info("🏠 IMMO SCANNER GESTART")
     logger.info("=" * 50)
 
-    # Valideer configuratie
     if config.TELEGRAM_BOT_TOKEN == "UW_BOT_TOKEN_HIER":
         logger.error("❌ Telegram token niet ingesteld in config.py!")
-        print("\n⚠️  Stel eerst uw tokens in in config.py")
-        print("   Zie SETUP.md voor instructies")
         sys.exit(1)
 
-    # Opstart bericht
     stuur_opstart_bericht(config)
 
-    # Laad eerder geziene panden
     geziene_ids = laad_geziene_panden()
-    logger.info(f"📋 {len(geziene_ids)} panden al eerder gezien")
+    wachtrij    = laad_wachtrij()
+    logger.info(f"📋 {len(geziene_ids)} panden al gezien, {len(wachtrij)} in wachtrij")
 
-    scan_interval = config.SCAN_INTERVAL_MINUTEN * 60
+    scan_interval   = getattr(config, 'SCAN_INTERVAL_MINUTEN', 30) * 60
+    ai_interval     = 60   # 1 AI analyse per minuut → nooit rate limit
+    laatste_scrape  = 0    # Zorgt dat eerste scrape meteen gebeurt
+    laatste_ai      = 0
 
-    # Eerste scan onmiddellijk
-    try:
-        geziene_ids = verwerk_nieuwe_panden(geziene_ids)
-        sla_geziene_panden_op(geziene_ids)
-    except Exception as e:
-        logger.error(f"Fout bij eerste scan: {e}")
-
-    # Herhalende scans
     while True:
-        logger.info(f"⏳ Volgende scan over {config.SCAN_INTERVAL_MINUTEN} minuten...")
-        time.sleep(scan_interval)
+        nu = time.time()
 
+        # ── Feedback verwerken ──────────────────────────────────────────
         try:
-            # Verwerk eerst eventuele feedback van de gebruiker
             feedback_updates = verwerk_feedback_updates(config)
-            for pand_id, feedback in feedback_updates:
-                pand_data = haal_pand_op_voor_feedback(pand_id)
-                if pand_data:
-                    sla_feedback_op(
-                        pand_data["pand"],
-                        pand_data["metrics"],
-                        pand_data["ai_analyse"],
-                        feedback
-                    )
-                    logger.info(f"Feedback verwerkt: {feedback} voor pand {pand_id}")
-
-            geziene_ids = verwerk_nieuwe_panden(geziene_ids)
-            sla_geziene_panden_op(geziene_ids)
-        except KeyboardInterrupt:
-            logger.info("🛑 Scanner gestopt door gebruiker")
-            break
+            for pid, feedback in feedback_updates:
+                data = haal_pand_op_voor_feedback(pid)
+                if data:
+                    sla_feedback_op(data["pand"], data["metrics"], data["ai_analyse"], feedback)
+                    logger.info(f"Feedback: {feedback} voor pand {pid}")
         except Exception as e:
-            logger.error(f"Fout bij scan: {e}")
-            time.sleep(60)
+            logger.error(f"Fout bij feedback: {e}")
+
+        # ── Scrape nieuwe panden (elke 30 min) ─────────────────────────
+        if nu - laatste_scrape >= scan_interval:
+            try:
+                geziene_ids, wachtrij = scrape_nieuwe_panden(geziene_ids, wachtrij)
+                sla_geziene_panden_op(geziene_ids)
+                sla_wachtrij_op(wachtrij)
+                laatste_scrape = nu
+            except Exception as e:
+                logger.error(f"Fout bij scrapen: {e}")
+
+        # ── AI analyse (1 per minuut) ───────────────────────────────────
+        if nu - laatste_ai >= ai_interval and wachtrij:
+            try:
+                wachtrij = analyseer_volgend_pand(wachtrij)
+                sla_wachtrij_op(wachtrij)
+                laatste_ai = nu
+            except Exception as e:
+                logger.error(f"Fout bij AI analyse: {e}")
+
+        # ── Status log elke 10 min ──────────────────────────────────────
+        if len(wachtrij) > 0:
+            logger.info(f"⏳ Wachtrij: {len(wachtrij)} panden te analyseren")
+
+        time.sleep(30)  # Elke 30 seconden de lus doorlopen
 
 
 if __name__ == "__main__":
