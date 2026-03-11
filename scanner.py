@@ -4,7 +4,8 @@ Draait dag en nacht op de Raspberry Pi.
 
 Werking:
 - Elke 30 min: Immoweb scrapen → nieuwe panden in wachtrij
-- Elke 60 sec: 1 pand uit wachtrij analyseren met AI → nooit rate limit
+- Elke cyclus: kijk hoeveel tokens over → analyseer zoveel als past
+- Trechtersysteem: goedkope check eerst, dure analyse alleen als nodig
 - Feedback van Telegram knoppen verwerken bij elke cyclus
 """
 
@@ -19,9 +20,11 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
+import config2
 from scrapers.immoweb import haal_advertenties_op, verwerk_pand
 from analysis.berekeningen import bereken_metrics, is_interessant
 from analysis.ai_analyse import analyseer_pand_met_ai
+from analysis.token_tracker import tokens_in_laatste_minuut, tokens_vandaag, budget_status
 from notifications.telegram import stuur_melding, stuur_opstart_bericht, verwerk_feedback_updates
 from analysis.feedback import sla_pand_op_voor_feedback, haal_pand_op_voor_feedback, sla_feedback_op
 
@@ -65,10 +68,7 @@ def sla_wachtrij_op(wachtrij: list):
 # ─── STAP 1: SCRAPEN ─────────────────────────────────────────────────────────
 
 def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list) -> tuple[set, list]:
-    """
-    Haalt nieuwe panden op van Immoweb en zet interessante in de AI wachtrij.
-    Dit is snel en gebruikt geen AI tokens.
-    """
+    """Haalt nieuwe panden op en zet interessante in de wachtrij."""
     logger.info("🔍 Immoweb scrapen...")
 
     postcodes = config.REGIO_POSTCODES if config.REGIO_POSTCODES else [None]
@@ -81,10 +81,11 @@ def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list) -> tuple[set, list]:
 
     nieuwe = 0
     toegevoegd = 0
+    bestaande_ids = {item["pand_id"] for item in wachtrij}
 
     for pand_data in panden:
         pand_id = str(pand_data.get("id", ""))
-        if not pand_id or pand_id in geziene_ids:
+        if not pand_id or pand_id in geziene_ids or pand_id in bestaande_ids:
             continue
 
         geziene_ids.add(pand_id)
@@ -96,56 +97,85 @@ def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list) -> tuple[set, list]:
             interessant, _ = is_interessant(metrics, config.MIN_RENDEMENT)
 
             if interessant:
-                # Zet in wachtrij voor AI analyse later
                 wachtrij.append({
                     "pand_id": pand_id,
                     "pand": pand,
                     "metrics": metrics,
+                    "score": metrics.get("interessantheid_score", 0),
                     "toegevoegd": datetime.now().isoformat()
                 })
                 toegevoegd += 1
-                logger.info(f"➕ Wachtrij: {pand.get('gemeente')} €{pand.get('prijs', 0):,}")
+                logger.info(f"  ➕ {pand.get('gemeente')} €{pand.get('prijs', 0):,} (score {metrics.get('interessantheid_score', 0)})")
 
         except Exception as e:
-            logger.error(f"Fout bij verwerken pand {pand_id}: {e}")
+            logger.error(f"Fout bij verwerken {pand_id}: {e}")
 
-    logger.info(f"✅ Scrape klaar: {nieuwe} nieuw, {toegevoegd} in wachtrij (totaal: {len(wachtrij)})")
+    # Sorteer wachtrij op score — beste panden eerst
+    if config2.PRIORITEER_WACHTRIJ:
+        wachtrij.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    logger.info(f"✅ Scrape klaar: {nieuwe} nieuw, {toegevoegd} toegevoegd, {len(wachtrij)} in wachtrij")
     return geziene_ids, wachtrij
 
 
-# ─── STAP 2: AI ANALYSE (1 PER CYCLUS) ───────────────────────────────────────
+# ─── STAP 2: SLIM AI BUDGET BEHEER ───────────────────────────────────────────
 
-def analyseer_volgend_pand(wachtrij: list) -> list:
+def hoeveel_analyses_mogelijk() -> int:
     """
-    Haalt 1 pand uit de wachtrij en analyseert die met AI.
-    Door 1 per minuut te doen vermijden we de rate limit volledig.
+    Kijkt hoeveel tokens er over zijn en schat hoeveel analyses nog passen.
+    Een volledige analyse kost ~2700 tokens (alle stappen samen).
     """
-    if not wachtrij:
+    minuut_over = config2.TOKENS_PER_MINUUT_LIMIET - tokens_in_laatste_minuut()
+    dag_over = config2.TOKENS_PER_DAG_LIMIET - tokens_vandaag()
+
+    tokens_per_analyse = (
+        config2.TOKENS_SNELLE_CHECK +
+        config2.TOKENS_LOCATIE_CHECK +
+        config2.TOKENS_FOTO_ANALYSE +
+        config2.TOKENS_VOLLEDIGE_AI
+    )
+
+    # Hoeveel passen er in de minuut? En hoeveel zijn er nog over voor vandaag?
+    mogelijk_minuut = int(minuut_over * 0.80 / tokens_per_analyse)  # 80% van over
+    mogelijk_dag    = int(dag_over / tokens_per_analyse)
+
+    aantal = min(mogelijk_minuut, mogelijk_dag, 3)  # Max 3 tegelijk
+    return max(0, aantal)
+
+
+def analyseer_batch(wachtrij: list, aantal: int) -> list:
+    """Analyseert een batch van panden uit de wachtrij."""
+    if not wachtrij or aantal == 0:
         return wachtrij
 
-    item = wachtrij.pop(0)  # Eerste uit de rij
-    pand    = item["pand"]
-    metrics = item["metrics"]
-    pand_id = item["pand_id"]
+    logger.info(f"🤖 Batch analyse: {aantal} pand(en) van {len(wachtrij)} in wachtrij")
 
-    logger.info(f"🤖 AI analyse: {pand.get('gemeente')} €{pand.get('prijs', 0):,} ({len(wachtrij)} nog in wachtrij)")
+    for _ in range(min(aantal, len(wachtrij))):
+        if not wachtrij:
+            break
 
-    try:
-        ai_analyse = analyseer_pand_met_ai(pand, metrics, config.ANTHROPIC_API_KEY)
-        aanbeveling = ai_analyse.get("aanbeveling", "NEUTRAAL")
+        item = wachtrij.pop(0)
+        pand    = item["pand"]
+        metrics = item["metrics"]
+        pand_id = item["pand_id"]
 
-        if aanbeveling in ["STERK_AAN", "AAN"]:
-            logger.info(f"✅ {aanbeveling} → melding sturen!")
-            sla_pand_op_voor_feedback(pand_id, pand, metrics, ai_analyse)
-            stuur_melding(pand, metrics, ai_analyse, config)
-        else:
-            logger.info(f"❌ AI: {aanbeveling} → geen melding")
+        logger.info(f"🔬 Analyseren: {pand.get('gemeente')} €{pand.get('prijs', 0):,}")
 
-    except Exception as e:
-        logger.error(f"Fout bij AI analyse: {e}")
-        # Bij fout terug in wachtrij zetten
-        wachtrij.insert(0, item)
-        time.sleep(30)  # Extra wachten bij fout
+        try:
+            ai_analyse = analyseer_pand_met_ai(pand, metrics, config.ANTHROPIC_API_KEY)
+            aanbeveling = ai_analyse.get("aanbeveling", "NEUTRAAL")
+
+            if aanbeveling in ["STERK_AAN", "AAN"]:
+                logger.info(f"  🔥 {aanbeveling} prio {ai_analyse.get('prioriteit')}/10 → melding!")
+                sla_pand_op_voor_feedback(pand_id, pand, metrics, ai_analyse)
+                stuur_melding(pand, metrics, ai_analyse, config)
+            else:
+                logger.info(f"  ➡️  {aanbeveling} → geen melding")
+
+        except Exception as e:
+            logger.error(f"Fout bij analyse {pand_id}: {e}")
+            wachtrij.insert(0, item)  # Terug in wachtrij bij fout
+            break
 
     return wachtrij
 
@@ -163,28 +193,27 @@ def main():
 
     stuur_opstart_bericht(config)
 
-    geziene_ids = laad_geziene_panden()
-    wachtrij    = laad_wachtrij()
+    geziene_ids  = laad_geziene_panden()
+    wachtrij     = laad_wachtrij()
     logger.info(f"📋 {len(geziene_ids)} panden al gezien, {len(wachtrij)} in wachtrij")
 
-    scan_interval   = getattr(config, 'SCAN_INTERVAL_MINUTEN', 30) * 60
-    ai_interval     = 60   # 1 AI analyse per minuut → nooit rate limit
-    laatste_scrape  = 0    # Zorgt dat eerste scrape meteen gebeurt
-    laatste_ai      = 0
+    scan_interval  = getattr(config, 'SCAN_INTERVAL_MINUTEN', 30) * 60
+    laatste_scrape = 0
+    cyclus         = 0
 
     while True:
         nu = time.time()
+        cyclus += 1
 
         # ── Feedback verwerken ──────────────────────────────────────────
         try:
-            feedback_updates = verwerk_feedback_updates(config)
-            for pid, feedback in feedback_updates:
+            for pid, feedback in verwerk_feedback_updates(config):
                 data = haal_pand_op_voor_feedback(pid)
                 if data:
                     sla_feedback_op(data["pand"], data["metrics"], data["ai_analyse"], feedback)
-                    logger.info(f"Feedback: {feedback} voor pand {pid}")
+                    logger.info(f"👍/👎 Feedback: {feedback} voor {pid}")
         except Exception as e:
-            logger.error(f"Fout bij feedback: {e}")
+            logger.error(f"Feedback fout: {e}")
 
         # ── Scrape nieuwe panden (elke 30 min) ─────────────────────────
         if nu - laatste_scrape >= scan_interval:
@@ -194,22 +223,30 @@ def main():
                 sla_wachtrij_op(wachtrij)
                 laatste_scrape = nu
             except Exception as e:
-                logger.error(f"Fout bij scrapen: {e}")
+                logger.error(f"Scrape fout: {e}")
 
-        # ── AI analyse (1 per minuut) ───────────────────────────────────
-        if nu - laatste_ai >= ai_interval and wachtrij:
-            try:
-                wachtrij = analyseer_volgend_pand(wachtrij)
-                sla_wachtrij_op(wachtrij)
-                laatste_ai = nu
-            except Exception as e:
-                logger.error(f"Fout bij AI analyse: {e}")
+        # ── AI analyses — zoveel als het budget toelaat ─────────────────
+        if wachtrij:
+            aantal = hoeveel_analyses_mogelijk()
+            if aantal > 0:
+                try:
+                    wachtrij = analyseer_batch(wachtrij, aantal)
+                    sla_wachtrij_op(wachtrij)
+                except Exception as e:
+                    logger.error(f"Analyse fout: {e}")
+            else:
+                logger.info(f"⏳ Token budget te laag voor analyse — wachten...")
 
-        # ── Status log elke 10 min ──────────────────────────────────────
-        if len(wachtrij) > 0:
-            logger.info(f"⏳ Wachtrij: {len(wachtrij)} panden te analyseren")
+        # ── Status log elke 10 cycli ────────────────────────────────────
+        if cyclus % 10 == 0:
+            status = budget_status(config2.TOKENS_PER_MINUUT_LIMIET, config2.TOKENS_PER_DAG_LIMIET)
+            logger.info(
+                f"📊 Status | Wachtrij: {len(wachtrij)} | "
+                f"Tokens dag: {status['dag_gebruikt']:,} ({status['dag_pct']}%) | "
+                f"Aanroepen: {status['aanroepen_vandaag']}"
+            )
 
-        time.sleep(30)  # Elke 30 seconden de lus doorlopen
+        time.sleep(30)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """
 Feedback & Leermodule
-Slaat feedback op over panden en gebruikt die om de AI te verbeteren.
+Slaat feedback op en genereert steeds betere lessen voor de AI.
 Hoe meer feedback, hoe slimmer de AI wordt over tijd.
 """
 
@@ -11,12 +11,11 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-FEEDBACK_BESTAND = Path("feedback_data.json")
-MAX_FEEDBACK_IN_PROMPT = 8  # Hoeveel eerdere lessen meegeven aan AI
+FEEDBACK_BESTAND    = Path("feedback_data.json")
+MAX_FEEDBACK_PROMPT = 12  # Meer voorbeelden = betere AI
 
 
 def laad_feedback() -> list:
-    """Laadt alle opgeslagen feedback."""
     if FEEDBACK_BESTAND.exists():
         with open(FEEDBACK_BESTAND, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -24,104 +23,119 @@ def laad_feedback() -> list:
 
 
 def sla_feedback_op(pand: dict, metrics: dict, ai_analyse: dict, feedback: str):
-    """
-    Slaat feedback op over een pand.
-    feedback = "goed" (👍) of "slecht" (👎)
-    """
-    alle_feedback = laad_feedback()
-
-    entry = {
-        "datum": datetime.now().isoformat(),
-        "feedback": feedback,  # "goed" of "slecht"
-        "gemeente": pand.get("gemeente", ""),
-        "postcode": pand.get("postcode", ""),
-        "prijs": pand.get("prijs", 0),
-        "perceel_opp": pand.get("perceel_opp", 0),
-        "bewoonbare_opp": pand.get("bewoonbare_opp", 0),
-        "bouwjaar": pand.get("bouwjaar", ""),
-        "epc_score": pand.get("epc_score", ""),
-        "prijs_per_m2": metrics.get("prijs_per_m2", 0),
-        "prijs_per_m2_perceel": metrics.get("prijs_per_m2_perceel", 0),
-        "bruto_rendement": metrics.get("bruto_rendement", 0),
-        "project_marge": metrics.get("project_marge", 0),
-        "ai_aanbeveling": ai_analyse.get("aanbeveling", ""),
-        "ai_strategie": ai_analyse.get("beste_strategie", ""),
-        "ai_uitleg": ai_analyse.get("korte_uitleg", ""),
-    }
-
-    alle_feedback.append(entry)
-
+    """feedback = 'goed' (👍) of 'slecht' (👎)"""
+    alle = laad_feedback()
+    alle.append({
+        "datum":               datetime.now().isoformat(),
+        "feedback":            feedback,
+        "gemeente":            pand.get("gemeente", ""),
+        "postcode":            pand.get("postcode", ""),
+        "prijs":               pand.get("prijs", 0),
+        "perceel_opp":         pand.get("perceel_opp", 0),
+        "bewoonbare_opp":      pand.get("bewoonbare_opp", 0),
+        "bouwjaar":            pand.get("bouwjaar", ""),
+        "epc_score":           pand.get("epc_score", ""),
+        "staat":               pand.get("staat", ""),
+        "type":                pand.get("type", ""),
+        "prijs_per_m2":        metrics.get("prijs_per_m2", 0),
+        "prijs_per_m2_perceel":metrics.get("prijs_per_m2_perceel", 0),
+        "bruto_rendement":     metrics.get("bruto_rendement", 0),
+        "netto_rendement":     metrics.get("netto_rendement", 0),
+        "project_marge":       metrics.get("project_marge", 0),
+        "geschat_apps":        metrics.get("geschat_aantal_appartementen", 0),
+        "renovatiekost":       metrics.get("renovatiekost", 0),
+        "ai_aanbeveling":      ai_analyse.get("aanbeveling", ""),
+        "ai_strategie":        ai_analyse.get("beste_strategie", ""),
+        "ai_prioriteit":       ai_analyse.get("prioriteit", 0),
+        "ai_uitleg":           ai_analyse.get("korte_uitleg", ""),
+    })
     with open(FEEDBACK_BESTAND, "w", encoding="utf-8") as f:
-        json.dump(alle_feedback, f, ensure_ascii=False, indent=2)
-
-    logger.info(f"Feedback opgeslagen: {feedback} voor {pand.get('gemeente')} EUR {pand.get('prijs', 0):,}")
+        json.dump(alle, f, ensure_ascii=False, indent=2)
+    logger.info(f"Feedback: {feedback} voor {pand.get('gemeente')} EUR {pand.get('prijs', 0):,}")
 
 
 def genereer_lessen_voor_ai() -> str:
     """
-    Analyseert de feedback en genereert concrete lessen voor de AI.
-    Geeft een tekst terug die in de AI prompt gezet wordt.
+    Genereert concrete lessen uit alle feedback.
+    Hoe meer feedback, hoe gerichter de lessen.
     """
-    alle_feedback = laad_feedback()
-
-    if not alle_feedback:
+    alle = laad_feedback()
+    if not alle:
         return ""
 
-    goede_panden = [f for f in alle_feedback if f["feedback"] == "goed"]
-    slechte_panden = [f for f in alle_feedback if f["feedback"] == "slecht"]
+    goed   = [f for f in alle if f["feedback"] == "goed"]
+    slecht = [f for f in alle if f["feedback"] == "slecht"]
 
-    lessen = []
-    lessen.append(f"=== LESSEN UIT EERDERE BEOORDELINGEN ({len(alle_feedback)} panden beoordeeld) ===")
-    lessen.append(f"Goedgekeurd: {len(goede_panden)} panden | Afgekeurd: {len(slechte_panden)} panden")
-    lessen.append("")
+    r = [f"=== LESSEN UIT {len(alle)} BEOORDELINGEN ==="]
+    r.append(f"👍 {len(goed)} goedgekeurd | 👎 {len(slecht)} afgekeurd")
+    r.append("")
 
-    # Analyseer patronen in goede panden
-    if goede_panden:
-        gem_prijs_m2_goed = sum(p["prijs_per_m2"] for p in goede_panden if p["prijs_per_m2"]) / max(len(goede_panden), 1)
-        gem_rendement_goed = sum(p["bruto_rendement"] for p in goede_panden if p["bruto_rendement"]) / max(len(goede_panden), 1)
-        gem_marge_goed = sum(p["project_marge"] for p in goede_panden if p["project_marge"]) / max(len(goede_panden), 1)
-        goede_gemeenten = list(set(p["gemeente"] for p in goede_panden if p["gemeente"]))
+    def gem(lst, key):
+        vals = [x[key] for x in lst if x.get(key)]
+        return sum(vals) / len(vals) if vals else 0
 
-        lessen.append("KENMERKEN VAN GOEDGEKEURDE PANDEN:")
-        lessen.append(f"- Gemiddelde prijs/m2: EUR {gem_prijs_m2_goed:.0f}")
-        lessen.append(f"- Gemiddeld bruto rendement: {gem_rendement_goed:.1f}%")
-        lessen.append(f"- Gemiddelde projectmarge: {gem_marge_goed:.1f}%")
-        if goede_gemeenten:
-            lessen.append(f"- Interessante gemeenten: {', '.join(goede_gemeenten[:5])}")
+    if goed:
+        r.append("✅ GOEDGEKEURDE PANDEN — gemiddeld:")
+        r.append(f"  Prijs/m2: EUR {gem(goed,'prijs_per_m2'):.0f} | Perceel/m2: EUR {gem(goed,'prijs_per_m2_perceel'):.0f}")
+        r.append(f"  Rendement: {gem(goed,'bruto_rendement'):.1f}% bruto / {gem(goed,'netto_rendement'):.1f}% netto")
+        r.append(f"  Projectmarge: {gem(goed,'project_marge'):.1f}% | Gem apps: {gem(goed,'geschat_apps'):.1f}")
+        gemeenten = list(set(p["gemeente"] for p in goed if p["gemeente"]))[:6]
+        if gemeenten:
+            r.append(f"  Interessante gemeenten: {', '.join(gemeenten)}")
 
-    # Analyseer patronen in slechte panden
-    if slechte_panden:
-        gem_prijs_m2_slecht = sum(p["prijs_per_m2"] for p in slechte_panden if p["prijs_per_m2"]) / max(len(slechte_panden), 1)
-        slechte_gemeenten = list(set(p["gemeente"] for p in slechte_panden if p["gemeente"]))
+        # Beste strategieën
+        strategieen = {}
+        for p in goed:
+            s = p.get("ai_strategie", "")
+            if s:
+                strategieen[s] = strategieen.get(s, 0) + 1
+        if strategieen:
+            beste = sorted(strategieen.items(), key=lambda x: x[1], reverse=True)
+            r.append(f"  Beste strategieën: {' > '.join(f'{s}({n}x)' for s,n in beste)}")
 
-        lessen.append("")
-        lessen.append("KENMERKEN VAN AFGEKEURDE PANDEN:")
-        lessen.append(f"- Gemiddelde prijs/m2: EUR {gem_prijs_m2_slecht:.0f}")
-        if slechte_gemeenten:
-            lessen.append(f"- Minder interessante gemeenten: {', '.join(slechte_gemeenten[:5])}")
+    if slecht:
+        r.append("")
+        r.append("❌ AFGEKEURDE PANDEN — gemiddeld:")
+        r.append(f"  Prijs/m2: EUR {gem(slecht,'prijs_per_m2'):.0f} | Rendement: {gem(slecht,'bruto_rendement'):.1f}%")
+        gemeenten = list(set(p["gemeente"] for p in slecht if p["gemeente"]))[:6]
+        if gemeenten:
+            r.append(f"  Minder interessante gemeenten: {', '.join(gemeenten)}")
+        # Redenen van afkeuring
+        uitleg = [p["ai_uitleg"] for p in slecht if p.get("ai_uitleg")][:3]
+        for u in uitleg:
+            r.append(f"  Reden: {u}")
 
-    # Voeg de laatste concrete voorbeelden toe
-    recente_feedback = sorted(alle_feedback, key=lambda x: x["datum"], reverse=True)[:MAX_FEEDBACK_IN_PROMPT]
-    lessen.append("")
-    lessen.append("RECENTE CONCRETE VOORBEELDEN:")
-    for f in recente_feedback:
-        symbool = "👍" if f["feedback"] == "goed" else "👎"
-        lessen.append(
-            f"{symbool} {f['gemeente']} EUR {f['prijs']:,} | "
-            f"{f['prijs_per_m2']:.0f} EUR/m2 | "
+    # Drempelwaarden afleiden uit feedback
+    if len(goed) >= 3 and len(slecht) >= 3:
+        r.append("")
+        r.append("📐 AFGELEID UIT JOUW FEEDBACK:")
+        min_rend_goed   = min(p["bruto_rendement"] for p in goed if p.get("bruto_rendement"))
+        max_pm2_goed    = max(p["prijs_per_m2"] for p in goed if p.get("prijs_per_m2"))
+        min_marge_goed  = min(p["project_marge"] for p in goed if p.get("project_marge"))
+        r.append(f"  Minimaal rendement goedgekeurd: {min_rend_goed:.1f}%")
+        r.append(f"  Maximale prijs/m2 goedgekeurd: EUR {max_pm2_goed:.0f}")
+        r.append(f"  Minimale projectmarge goedgekeurd: {min_marge_goed:.1f}%")
+
+    # Recente concrete voorbeelden
+    recente = sorted(alle, key=lambda x: x["datum"], reverse=True)[:MAX_FEEDBACK_PROMPT]
+    r.append("")
+    r.append("🕐 RECENTE VOORBEELDEN (meest recent eerst):")
+    for f in recente:
+        sym = "👍" if f["feedback"] == "goed" else "👎"
+        r.append(
+            f"  {sym} {f['gemeente']} EUR {f['prijs']:,} | "
+            f"{f['prijs_per_m2']:.0f}EUR/m2 | "
             f"{f['bruto_rendement']:.1f}% rendement | "
             f"marge {f['project_marge']:.1f}% | "
-            f"AI zei: {f['ai_aanbeveling']}"
+            f"prio {f.get('ai_prioriteit',0)}/10"
         )
 
-    lessen.append("")
-    lessen.append("Gebruik deze lessen om uw beoordeling te kalibreren op de voorkeuren van deze specifieke investeerder.")
-
-    return "\n".join(lessen)
+    r.append("")
+    r.append("Pas uw beoordeling aan op bovenstaande voorkeuren van deze investeerder.")
+    return "\n".join(r)
 
 
 def haal_pand_op_voor_feedback(pand_id: str) -> dict:
-    """Haalt een opgeslagen pand op via ID voor feedbackverwerking."""
     bestand = Path(f"pending_feedback/{pand_id}.json")
     if bestand.exists():
         with open(bestand, "r", encoding="utf-8") as f:
@@ -130,8 +144,6 @@ def haal_pand_op_voor_feedback(pand_id: str) -> dict:
 
 
 def sla_pand_op_voor_feedback(pand_id: str, pand: dict, metrics: dict, ai_analyse: dict):
-    """Slaat pand tijdelijk op zodat feedback later verwerkt kan worden."""
     Path("pending_feedback").mkdir(exist_ok=True)
-    bestand = Path(f"pending_feedback/{pand_id}.json")
-    with open(bestand, "w", encoding="utf-8") as f:
+    with open(Path(f"pending_feedback/{pand_id}.json"), "w", encoding="utf-8") as f:
         json.dump({"pand": pand, "metrics": metrics, "ai_analyse": ai_analyse}, f, ensure_ascii=False)
