@@ -23,10 +23,13 @@ MIN_PRIJS = 50_000           # Minimale aankoopprijs in euro
 MIN_PERCEELOPPERVLAKTE = 200 # Minimale perceelgrootte in m² (voor sloop/herbouw)
 MIN_RENDEMENT = 5.0          # Minimaal bruto huurrendement in % (voor verhuur)
 
-# --- WHATSAPP BUSINESS API ---
-WHATSAPP_TOKEN = "UW_TOKEN_HIER"          # Meta Business API token
-WHATSAPP_PHONE_ID = "UW_PHONE_ID_HIER"   # WhatsApp Business Phone Number ID
-WHATSAPP_TO_NUMBER = "32XXXXXXXXX"        # Uw nummer (zonder + maar met landcode, bv. 32476...)
+# --- TELEGRAM BOT ---
+# Stap 1: Stuur een bericht naar @BotFather op Telegram → /newbot → kopieer de token
+# Stap 2: Stuur een bericht naar uw bot, ga dan naar:
+#          https://api.telegram.org/bot<UW_TOKEN>/getUpdates
+#          en kopieer het "id" getal onder "chat"
+TELEGRAM_BOT_TOKEN = "UW_BOT_TOKEN_HIER"   # Bv. 123456789:ABCdef...
+TELEGRAM_CHAT_ID = "UW_CHAT_ID_HIER"       # Bv. 123456789
 
 # --- GROQ AI API (gratis!) ---
 # Aanmaken op: groqcloud.com → inloggen → "API Keys" → "Create API Key"

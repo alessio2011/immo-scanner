@@ -19,7 +19,7 @@ import config
 from scrapers.immoweb import haal_advertenties_op, verwerk_pand
 from analysis.berekeningen import bereken_metrics, is_interessant
 from analysis.ai_analyse import analyseer_pand_met_ai
-from notifications.whatsapp import stuur_whatsapp_melding, stuur_opstart_bericht
+from notifications.telegram import stuur_melding, stuur_opstart_bericht
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -105,7 +105,7 @@ def verwerk_nieuwe_panden(geziene_ids: set) -> set:
             if aanbeveling in ["STERK_AAN", "AAN"]:
                 interessante_panden += 1
                 logger.info(f"✅ AI zegt: {aanbeveling} - Melding versturen...")
-                stuur_whatsapp_melding(pand, metrics, ai_analyse, config)
+                stuur_melding(pand, metrics, ai_analyse, config)
                 time.sleep(3)  # Kleine pauze tussen berichten
 
         except Exception as e:
@@ -122,8 +122,8 @@ def main():
     logger.info("=" * 50)
 
     # Valideer configuratie
-    if config.WHATSAPP_TOKEN == "UW_TOKEN_HIER":
-        logger.error("❌ WhatsApp token niet ingesteld in config.py!")
+    if config.TELEGRAM_BOT_TOKEN == "UW_BOT_TOKEN_HIER":
+        logger.error("❌ Telegram token niet ingesteld in config.py!")
         print("\n⚠️  Stel eerst uw tokens in in config.py")
         print("   Zie SETUP.md voor instructies")
         sys.exit(1)
