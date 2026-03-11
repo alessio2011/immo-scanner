@@ -57,7 +57,7 @@ def stuur_melding(pand: dict, metrics: dict, ai_analyse: dict, config) -> bool:
 ━━━━━━━━━━━━━━━━━━━━
 📊 *FINANCIEEL OVERZICHT*
 
-💸 Aankoopkost: €{esc(f"{metrics.get('totale_aankoopkost', 0):,")}
+💸 Aankoopkost: €{esc(str(metrics.get('totale_aankoopkost', 0)))}
 📈 Bruto rendement: *{esc(metrics.get('bruto_rendement', 0))}%*
 🏗️ Projectmarge: *{esc(metrics.get('project_marge', 0))}%*
 🏢 Geschat {esc(metrics.get('geschat_aantal_appartementen', 0))} appartementen mogelijk
