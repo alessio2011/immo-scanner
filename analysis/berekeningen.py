@@ -241,14 +241,19 @@ def is_interessant(metrics: dict, min_rendement: float = 5.0) -> tuple[bool, lis
     score = metrics.get("interessantheid_score", 0)
     bruto_rendement = metrics.get("bruto_rendement", 0)
     project_marge = metrics.get("project_marge", 0)
+    perceel_opp = metrics.get("prijs_per_m2_perceel", 0)
 
+    # Ruimere drempels — de AI filtert daarna nog verder
     if bruto_rendement >= min_rendement:
         redenen.append(f"Goed huurrendement: {bruto_rendement}%")
-    if project_marge >= 12:
-        redenen.append(f"Goede projectmarge: {project_marge}%")
-    if metrics.get("geschat_aantal_appartementen", 0) >= 3:
+    if bruto_rendement >= 3.5:  # Al interessant voor AI om te bekijken
+        redenen.append(f"Redelijk rendement: {bruto_rendement}%")
+    if project_marge >= 8:
+        redenen.append(f"Projectmarge: {project_marge}%")
+    if metrics.get("geschat_aantal_appartementen", 0) >= 2:
         redenen.append(f"Potentieel {metrics['geschat_aantal_appartementen']} appartementen")
-    if metrics.get("prijs_per_m2", 0) < 1500 and metrics.get("prijs_per_m2", 0) > 0:
-        redenen.append(f"Lage prijs/m2: EUR {metrics['prijs_per_m2']}")
+    if metrics.get("prijs_per_m2", 0) < 1800 and metrics.get("prijs_per_m2", 0) > 0:
+        redenen.append(f"Prijs/m2: EUR {metrics['prijs_per_m2']}")
 
-    return score >= 35 and len(redenen) > 0, redenen
+    # Score 20 is al genoeg voor een AI check — liever te veel dan te weinig
+    return score >= 20 and len(redenen) > 0, redenen

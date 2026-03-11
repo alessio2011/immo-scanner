@@ -22,51 +22,67 @@ HEADERS = {
 }
 
 
-def haal_advertenties_op(postcodes: list, max_prijs: int, min_prijs: int, pagina: int = 1) -> list:
+def haal_advertenties_op(postcodes: list, max_prijs: int, min_prijs: int, max_paginas: int = 10) -> list:
     """
     Haalt advertenties op van Immoweb voor gegeven postcodes en prijsrange.
-    Geeft een lijst van panden terug.
+    Scrapet meerdere pagina's (standaard 10 = ~300 panden).
     """
     alle_panden = []
 
     if not postcodes:
-        # Zonder filter: heel België
         postcodes = [None]
 
     for postcode in postcodes:
-        params = {
-            "countries": "BE",
-            "maxPrice": max_prijs,
-            "minPrice": min_prijs,
-            "orderBy": "newest",
-            "page": pagina,
-            "isAPublicSale": "false",
-        }
+        pagina = 1
+        while pagina <= max_paginas:
+            params = {
+                "countries": "BE",
+                "maxPrice": max_prijs,
+                "minPrice": min_prijs,
+                "orderBy": "newest",
+                "page": pagina,
+                "isAPublicSale": "false",
+            }
 
-        if postcode:
-            params["postalCodes"] = postcode
+            if postcode:
+                params["postalCodes"] = postcode
 
-        try:
-            response = requests.get(
-                "https://www.immoweb.be/en/search-results/house,apartment/for-sale",
-                params=params,
-                headers=HEADERS,
-                timeout=15
-            )
+            try:
+                response = requests.get(
+                    "https://www.immoweb.be/en/search-results/house,apartment/for-sale",
+                    params=params,
+                    headers=HEADERS,
+                    timeout=15
+                )
 
-            if response.status_code == 200:
-                data = response.json()
-                resultaten = data.get("results", [])
-                logger.info(f"Postcode {postcode}: {len(resultaten)} panden gevonden")
-                alle_panden.extend(resultaten)
-            else:
-                logger.warning(f"Immoweb API fout: {response.status_code} voor postcode {postcode}")
+                if response.status_code == 200:
+                    data = response.json()
+                    resultaten = data.get("results", [])
 
-            time.sleep(2)  # Beleefd wachten tussen requests
+                    if not resultaten:
+                        # Geen resultaten meer op deze pagina → stoppen
+                        logger.info(f"Postcode {postcode}: pagina {pagina} leeg, stoppen")
+                        break
 
-        except Exception as e:
-            logger.error(f"Fout bij ophalen Immoweb data: {e}")
+                    logger.info(f"Postcode {postcode}: pagina {pagina} → {len(resultaten)} panden")
+                    alle_panden.extend(resultaten)
 
+                    # Als er minder dan 30 resultaten zijn, is dit de laatste pagina
+                    if len(resultaten) < 30:
+                        break
+
+                    pagina += 1
+                else:
+                    logger.warning(f"Immoweb fout: {response.status_code} voor postcode {postcode} pagina {pagina}")
+                    break
+
+                time.sleep(2)  # Beleefd wachten
+
+            except Exception as e:
+                logger.error(f"Fout bij ophalen Immoweb data pagina {pagina}: {e}")
+                break
+
+    logger.info(f"Totaal {len(alle_panden)} panden opgehaald")
     return alle_panden
 
 

@@ -21,7 +21,7 @@ REGIO_NAMEN = [
 MAX_PRIJS = 500_000          # Maximale aankoopprijs in euro
 MIN_PRIJS = 50_000           # Minimale aankoopprijs in euro
 MIN_PERCEELOPPERVLAKTE = 200 # Minimale perceelgrootte in m² (voor sloop/herbouw)
-MIN_RENDEMENT = 5.0          # Minimaal bruto huurrendement in % (voor verhuur)
+MIN_RENDEMENT = 3.5          # Minimaal bruto huurrendement in % (voor verhuur)
 
 # --- TELEGRAM BOT ---
 # Stap 1: Stuur een bericht naar @BotFather op Telegram → /newbot → kopieer de token
@@ -37,6 +37,7 @@ ANTHROPIC_API_KEY = "UW_GROQ_KEY_HIER"  # Begint met "gsk_..."
 
 # --- SCAN INTERVAL ---
 SCAN_INTERVAL_MINUTEN = 30   # Hoe vaak controleren (in minuten)
+MAX_PAGINAS = 10             # Hoeveel pagina's per scan (1 pagina = ~30 panden, 10 = ~300)
 
 # --- IMMOWEB ZOEKFILTERS ---
 IMMOWEB_FILTERS = {

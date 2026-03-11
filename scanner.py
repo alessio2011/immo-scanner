@@ -65,7 +65,8 @@ def verwerk_nieuwe_panden(geziene_ids: set) -> set:
     panden = haal_advertenties_op(
         postcodes=postcodes,
         max_prijs=config.MAX_PRIJS,
-        min_prijs=config.MIN_PRIJS
+        min_prijs=config.MIN_PRIJS,
+        max_paginas=getattr(config, 'MAX_PAGINAS', 10)
     )
 
     logger.info(f"📦 {len(panden)} panden gevonden, filteren...")
