@@ -9,6 +9,7 @@ import requests
 import json
 import logging
 from analysis.locatie_info import haal_gemeente_info_op, formatteer_locatie_context
+from analysis.feedback import genereer_lessen_voor_ai
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,9 @@ def analyseer_pand_met_ai(pand: dict, metrics: dict, api_key: str) -> dict:
     Stuurt pand info naar Groq (Llama) voor een expertbeoordeling.
     Geeft een dict terug met: aanbeveling, uitleg, risicos, kansen
     """
+
+    # Haal lessen op uit eerdere feedback
+    lessen = genereer_lessen_voor_ai()
 
     # Haal actuele locatiedata op
     gemeente = pand.get('gemeente', '')
@@ -35,6 +39,8 @@ Je bent kritisch, realistisch en denkt altijd aan de werkelijke winstgevendheid.
 
 === ACTUELE LOCATIEDATA (opgehaald uit Wikipedia en Statbel) ===
 {locatie_context}
+
+{lessen}
 
 === PAND INFORMATIE ===
 Type: {pand.get('type', 'onbekend')} - {pand.get('subtype', '')}

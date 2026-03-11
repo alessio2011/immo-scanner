@@ -19,7 +19,8 @@ import config
 from scrapers.immoweb import haal_advertenties_op, verwerk_pand
 from analysis.berekeningen import bereken_metrics, is_interessant
 from analysis.ai_analyse import analyseer_pand_met_ai
-from notifications.telegram import stuur_melding, stuur_opstart_bericht
+from notifications.telegram import stuur_melding, stuur_opstart_bericht, verwerk_feedback_updates
+from analysis.feedback import sla_pand_op_voor_feedback, haal_pand_op_voor_feedback, sla_feedback_op
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -105,6 +106,7 @@ def verwerk_nieuwe_panden(geziene_ids: set) -> set:
             if aanbeveling in ["STERK_AAN", "AAN"]:
                 interessante_panden += 1
                 logger.info(f"✅ AI zegt: {aanbeveling} - Melding versturen...")
+                sla_pand_op_voor_feedback(pand_id, pand, metrics, ai_analyse)
                 stuur_melding(pand, metrics, ai_analyse, config)
                 time.sleep(3)  # Kleine pauze tussen berichten
 
@@ -150,6 +152,19 @@ def main():
         time.sleep(scan_interval)
 
         try:
+            # Verwerk eerst eventuele feedback van de gebruiker
+            feedback_updates = verwerk_feedback_updates(config)
+            for pand_id, feedback in feedback_updates:
+                pand_data = haal_pand_op_voor_feedback(pand_id)
+                if pand_data:
+                    sla_feedback_op(
+                        pand_data["pand"],
+                        pand_data["metrics"],
+                        pand_data["ai_analyse"],
+                        feedback
+                    )
+                    logger.info(f"Feedback verwerkt: {feedback} voor pand {pand_id}")
+
             geziene_ids = verwerk_nieuwe_panden(geziene_ids)
             sla_geziene_panden_op(geziene_ids)
         except KeyboardInterrupt:
@@ -157,7 +172,7 @@ def main():
             break
         except Exception as e:
             logger.error(f"Fout bij scan: {e}")
-            time.sleep(60)  # Wacht 1 minuut bij fout
+            time.sleep(60)
 
 
 if __name__ == "__main__":
