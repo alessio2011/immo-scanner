@@ -185,6 +185,9 @@ def analyseer_batch(wachtrij: list, aantal: int) -> list:
 
             ai_analyse["beslissing"] = beslissing
             ai_analyse["totale_score"] = totale_score
+            ai_analyse["subscores"] = scorekaart.get("subscores", {})
+            ai_analyse["scenarios"] = scorekaart.get("scenarios", {})
+            ai_analyse["zachte_vlaggen"] = zachte_vlaggen
 
             if aanbeveling in ["STERK_AAN", "AAN"] or beslissing in ["GO", "REVIEW"]:
                 logger.info(f"  🔥 {aanbeveling} | Score {totale_score}/100 | {beslissing} → melding!")

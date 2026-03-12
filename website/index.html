@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Immo Scanner</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0f;--bg2:#111118;--bg3:#1a1a24;
+  --border:#2a2a3a;--border2:#3a3a50;
+  --text:#e8e8f0;--text2:#8888a8;
+  --go:#22c55e;--review:#f59e0b;--reject:#ef4444;
+  --accent:#6366f1;--accent2:#818cf8;
+}
+body{background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;min-height:100vh}
+.mono{font-family:'DM Mono',monospace}
+nav{display:flex;align-items:center;justify-content:space-between;padding:1rem 2rem;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:100}
+.logo{font-size:1.1rem;font-weight:700;display:flex;align-items:center;gap:8px}
+.logo-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.6;transform:scale(1.3)}}
+.nav-links{display:flex;background:var(--bg3);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.nav-link{padding:0.4rem 1rem;font-size:0.8rem;font-weight:500;cursor:pointer;color:var(--text2);transition:all 0.15s}
+.nav-link.active,.nav-link:hover{color:var(--text);background:var(--border)}
+.nav-status{display:flex;align-items:center;gap:6px;font-size:0.75rem;color:var(--go);font-family:'DM Mono',monospace}
+.status-dot{width:6px;height:6px;border-radius:50%;background:var(--go);animation:pulse 1.5s infinite}
+.page{display:none;padding:2rem;max-width:1400px;margin:0 auto}
+.page.active{display:block}
+
+/* API CONFIG BANNER */
+.api-banner{background:var(--bg2);border:1px solid var(--border2);border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1rem}
+.api-banner input{flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.75rem;color:var(--text);font-family:'DM Mono',monospace;font-size:0.8rem}
+.api-banner input:focus{outline:none;border-color:var(--accent)}
+.btn-sm{background:var(--accent);border:none;border-radius:6px;padding:0.4rem 0.9rem;color:#fff;font-family:'Syne',sans-serif;font-size:0.8rem;font-weight:600;cursor:pointer}
+.api-status{font-size:0.75rem;font-family:'DM Mono',monospace}
+.api-status.ok{color:var(--go)}
+.api-status.err{color:var(--reject)}
+.api-status.loading{color:var(--text2)}
+
+/* METRICS */
+.metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem}
+.metric-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1.25rem;position:relative;overflow:hidden}
+.metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.metric-card.go::before{background:var(--go)}
+.metric-card.review::before{background:var(--review)}
+.metric-card.reject::before{background:var(--reject)}
+.metric-card.neutral::before{background:var(--accent)}
+.metric-label{font-size:0.7rem;color:var(--text2);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem}
+.metric-value{font-size:2rem;font-weight:700;font-family:'DM Mono',monospace;line-height:1}
+.metric-sub{font-size:0.72rem;color:var(--text2);margin-top:0.4rem}
+.metric-card.go .metric-value{color:var(--go)}
+.metric-card.review .metric-value{color:var(--review)}
+.metric-card.reject .metric-value{color:var(--reject)}
+.metric-card.neutral .metric-value{color:var(--accent2)}
+
+/* TOKEN BAR */
+.token-bar-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap}
+.token-item{flex:1;min-width:150px}
+.token-label{font-size:0.7rem;color:var(--text2);margin-bottom:0.3rem;display:flex;justify-content:space-between}
+.token-track{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
+.token-fill{height:100%;border-radius:2px;transition:width 0.5s ease}
+
+/* SECTION */
+.section-title{font-size:0.7rem;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:var(--text2);margin-bottom:1rem}
+
+/* PANDEN */
+.filters{display:flex;gap:0.75rem;margin-bottom:1.25rem;align-items:center}
+.filter-group{display:flex;background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.filter-btn{padding:0.4rem 1rem;font-size:0.8rem;font-weight:500;cursor:pointer;color:var(--text2);transition:all 0.15s}
+.filter-btn.active,.filter-btn:hover{color:var(--text);background:var(--border)}
+.panden-grid{display:grid;gap:0.75rem}
+.pand-row{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem 1.25rem;display:grid;grid-template-columns:auto 1fr auto auto auto;align-items:center;gap:1rem;cursor:pointer;transition:all 0.15s}
+.pand-row:hover{border-color:var(--border2);background:var(--bg3);transform:translateX(2px)}
+.pand-badge{padding:0.25rem 0.6rem;border-radius:6px;font-size:0.7rem;font-weight:600;font-family:'DM Mono',monospace;white-space:nowrap}
+.pand-badge.GO{background:rgba(34,197,94,0.12);color:var(--go);border:1px solid rgba(34,197,94,0.2)}
+.pand-badge.REVIEW{background:rgba(245,158,11,0.12);color:var(--review);border:1px solid rgba(245,158,11,0.2)}
+.pand-badge.REJECT{background:rgba(239,68,68,0.1);color:var(--reject);border:1px solid rgba(239,68,68,0.15)}
+.pand-info h3{font-size:0.9rem;font-weight:600;margin-bottom:0.2rem}
+.pand-info p{font-size:0.75rem;color:var(--text2)}
+.pand-prijs{font-family:'DM Mono',monospace;font-size:0.9rem;font-weight:500;white-space:nowrap;color:var(--text)}
+.pand-score-wrap{text-align:right}
+.score-num{font-family:'DM Mono',monospace;font-size:1.1rem;font-weight:600}
+.score-label{font-size:0.65rem;color:var(--text2)}
+.pand-strategie{font-size:0.7rem;color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:0.2rem 0.5rem;white-space:nowrap}
+.empty-state{text-align:center;padding:3rem;color:var(--text2);font-size:0.85rem}
+
+/* DETAIL */
+.detail-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:200;overflow-y:auto;padding:2rem}
+.detail-overlay.open{display:flex;align-items:flex-start;justify-content:center}
+.detail-panel{background:var(--bg2);border:1px solid var(--border2);border-radius:16px;width:100%;max-width:820px}
+.detail-header{padding:1.5rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}
+.detail-close{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.8rem;cursor:pointer;font-size:0.8rem;color:var(--text2);flex-shrink:0}
+.detail-body{padding:1.5rem;display:grid;gap:1.25rem}
+.info-block{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:1rem}
+.info-block-title{font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text2);margin-bottom:0.75rem}
+.twee-col{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.data-row{display:flex;justify-content:space-between;align-items:center;padding:0.35rem 0;border-bottom:1px solid var(--border)}
+.data-row:last-child{border-bottom:none}
+.data-key{font-size:0.75rem;color:var(--text2)}
+.data-val{font-family:'DM Mono',monospace;font-size:0.8rem;font-weight:500}
+
+/* SCOREKAART */
+.score-bars{display:grid;gap:0.6rem}
+.score-bar-row{display:flex;align-items:center;gap:0.75rem}
+.score-bar-label{font-size:0.72rem;color:var(--text2);width:80px;flex-shrink:0}
+.score-bar-track{flex:1;height:6px;background:var(--bg);border-radius:3px;overflow:hidden}
+.score-bar-fill{height:100%;border-radius:3px;transition:width 0.6s ease}
+.score-bar-val{font-family:'DM Mono',monospace;font-size:0.72rem;color:var(--text2);width:28px;text-align:right;flex-shrink:0}
+
+/* SCENARIOS */
+.scenario-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:0.75rem}
+.scenario-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.75rem;text-align:center}
+.scenario-card.realistisch{border-color:var(--accent);background:rgba(99,102,241,0.06)}
+.scenario-name{font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--text2);margin-bottom:0.4rem}
+.scenario-marge{font-family:'DM Mono',monospace;font-size:1.2rem;font-weight:600}
+.pos{color:var(--go)}.neg{color:var(--reject)}
+.scenario-winst{font-size:0.7rem;color:var(--text2);margin-top:0.2rem}
+
+/* FEEDBACK BUTTONS */
+.feedback-row{display:flex;gap:0.75rem}
+.btn-feedback{flex:1;padding:0.65rem;border-radius:8px;font-size:0.82rem;font-weight:600;cursor:pointer;transition:all 0.15s;border:1px solid;font-family:'Syne',sans-serif}
+.btn-goed{background:rgba(34,197,94,0.1);border-color:rgba(34,197,94,0.3);color:var(--go)}
+.btn-goed:hover{background:rgba(34,197,94,0.2)}
+.btn-slecht{background:rgba(239,68,68,0.08);border-color:rgba(239,68,68,0.2);color:var(--reject)}
+.btn-slecht:hover{background:rgba(239,68,68,0.15)}
+.btn-feedback:disabled{opacity:0.4;cursor:not-allowed}
+
+.kansen-list,.risicos-list{list-style:none;display:grid;gap:0.35rem}
+.kansen-list li::before{content:'+ ';color:var(--go);font-family:'DM Mono',monospace}
+.risicos-list li::before{content:'- ';color:var(--reject);font-family:'DM Mono',monospace}
+.kansen-list li,.risicos-list li{font-size:0.8rem;color:var(--text2);line-height:1.5}
+
+.tags{display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.5rem}
+.tag{font-size:0.7rem;background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:0.15rem 0.5rem;color:var(--text2)}
+.tag.warn{border-color:rgba(245,158,11,0.3);color:var(--review);background:rgba(245,158,11,0.06)}
+
+/* STATS */
+.chart-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1.25rem}
+.stat-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+
+/* SETTINGS */
+.settings-form{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1.5rem;display:grid;gap:1.25rem;max-width:560px}
+.field label{display:block;font-size:0.7rem;color:var(--text2);margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.06em}
+.field input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:0.5rem 0.75rem;color:var(--text);font-family:'DM Mono',monospace;font-size:0.85rem}
+.field input:focus{outline:none;border-color:var(--accent)}
+.twee-col-form{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.save-btn{background:var(--accent);border:none;border-radius:8px;padding:0.6rem 1.25rem;color:#fff;font-family:'Syne',sans-serif;font-size:0.85rem;font-weight:600;cursor:pointer;width:fit-content}
+.save-btn:hover{background:var(--accent2)}
+
+/* LOGS */
+.log-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem;font-family:'DM Mono',monospace;font-size:0.72rem;color:var(--text2);max-height:400px;overflow-y:auto}
+.log-line{padding:0.15rem 0;border-bottom:1px solid rgba(255,255,255,0.03)}
+.log-line.info{color:var(--text2)}
+.log-line.error{color:var(--reject)}
+.log-line.warn{color:var(--review)}
+.log-line.go{color:var(--go)}
+
+.immoweb-link{display:inline-flex;align-items:center;gap:6px;background:var(--accent);color:#fff;border:none;border-radius:8px;padding:0.55rem 1rem;font-size:0.82rem;font-weight:600;cursor:pointer;text-decoration:none;font-family:'Syne',sans-serif;margin-bottom:0}
+.immoweb-link:hover{background:var(--accent2)}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo"><div class="logo-dot"></div>Immo Scanner</div>
+  <div class="nav-links">
+    <div class="nav-link active" onclick="showPage('dashboard',this)">Dashboard</div>
+    <div class="nav-link" onclick="showPage('panden',this)">Panden</div>
+    <div class="nav-link" onclick="showPage('stats',this)">Statistieken</div>
+    <div class="nav-link" onclick="showPage('logs',this)">Logs</div>
+    <div class="nav-link" onclick="showPage('instellingen',this)">Instellingen</div>
+  </div>
+  <div class="nav-status"><div class="status-dot" id="status-dot" style="background:var(--text2)"></div><span class="mono" id="status-tekst">verbinden...</span></div>
+</nav>
+
+<!-- DASHBOARD -->
+<div id="page-dashboard" class="page active">
+  <div class="api-banner">
+    <span style="font-size:0.8rem;color:var(--text2);white-space:nowrap">Pi adres:</span>
+    <input type="text" id="api-url-input" placeholder="http://192.168.1.X:5000">
+    <button class="btn-sm" onclick="opslaanApiUrl()">Verbinden</button>
+    <span class="api-status loading" id="api-status-tekst">niet verbonden</span>
+  </div>
+  <div class="metrics-grid">
+    <div class="metric-card go"><div class="metric-label">GO vandaag</div><div class="metric-value" id="m-go">—</div><div class="metric-sub">automatisch in pipeline</div></div>
+    <div class="metric-card review"><div class="metric-label">REVIEW</div><div class="metric-value" id="m-review">—</div><div class="metric-sub">menselijke check nodig</div></div>
+    <div class="metric-card reject"><div class="metric-label">Reject</div><div class="metric-value" id="m-reject">—</div><div class="metric-sub">automatisch uitgesloten</div></div>
+    <div class="metric-card neutral"><div class="metric-label">Totaal gescand</div><div class="metric-value" id="m-gescand">—</div><div class="metric-sub" id="m-aanroepen">— AI aanroepen</div></div>
+  </div>
+  <div class="token-bar-wrap">
+    <div class="token-item">
+      <div class="token-label"><span>Token budget vandaag</span><span class="mono" id="token-dag-tekst">—</span></div>
+      <div class="token-track"><div class="token-fill" id="token-dag-bar" style="width:0%;background:var(--accent)"></div></div>
+    </div>
+    <div class="token-item">
+      <div class="token-label"><span>Wachtrij</span><span class="mono" id="wachtrij-tekst">—</span></div>
+      <div class="token-track"><div class="token-fill" id="wachtrij-bar" style="width:0%;background:var(--review)"></div></div>
+    </div>
+  </div>
+  <div class="section-title">Laatste GO & REVIEW panden</div>
+  <div class="panden-grid" id="dashboard-panden"><div class="empty-state">Verbind met de Pi om panden te laden...</div></div>
+</div>
+
+<!-- PANDEN -->
+<div id="page-panden" class="page">
+  <div class="filters">
+    <div class="filter-group">
+      <div class="filter-btn active" onclick="filterPanden('',this)">Alle</div>
+      <div class="filter-btn" onclick="filterPanden('GO',this)">GO</div>
+      <div class="filter-btn" onclick="filterPanden('REVIEW',this)">REVIEW</div>
+    </div>
+    <span style="font-size:0.75rem;color:var(--text2);margin-left:auto;font-family:'DM Mono',monospace" id="panden-count">—</span>
+    <button class="btn-sm" onclick="laadPanden()">↻ Verversen</button>
+  </div>
+  <div class="panden-grid" id="panden-lijst"><div class="empty-state">Verbind met de Pi om panden te laden...</div></div>
+</div>
+
+<!-- STATS -->
+<div id="page-stats" class="page">
+  <div class="metrics-grid" style="margin-bottom:1.5rem">
+    <div class="metric-card neutral"><div class="metric-label">Totaal geanalyseerd</div><div class="metric-value" id="s-totaal">—</div></div>
+    <div class="metric-card go"><div class="metric-label">GO rate</div><div class="metric-value" id="s-go-rate">—</div></div>
+    <div class="metric-card neutral"><div class="metric-label">Gem. score GO</div><div class="metric-value" id="s-gem-score">—</div></div>
+    <div class="metric-card review"><div class="metric-label">Feedback gegeven</div><div class="metric-value" id="s-feedback">—</div></div>
+  </div>
+  <div class="stat-row">
+    <div class="chart-wrap">
+      <div class="section-title">Top gemeenten (GO panden)</div>
+      <div style="position:relative;height:200px"><canvas id="chart-gemeenten"></canvas></div>
+    </div>
+    <div class="chart-wrap">
+      <div class="section-title">Score verdeling</div>
+      <div style="position:relative;height:200px"><canvas id="chart-scores"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- LOGS -->
+<div id="page-logs" class="page">
+  <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
+    <div class="section-title" style="margin:0">Scanner logs</div>
+    <button class="btn-sm" onclick="laadLogs()">↻ Verversen</button>
+  </div>
+  <div class="log-wrap" id="log-wrap"><div style="color:var(--text2)">Logs laden...</div></div>
+</div>
+
+<!-- INSTELLINGEN -->
+<div id="page-instellingen" class="page">
+  <div class="section-title" style="margin-bottom:1rem">Scaninstellingen</div>
+  <div class="settings-form">
+    <div class="field"><label>Postcodes (kommagescheiden)</label><input id="s-postcodes" type="text" placeholder="3500, 3600, ..."></div>
+    <div class="twee-col-form">
+      <div class="field"><label>Min prijs (EUR)</label><input id="s-min-prijs" type="number"></div>
+      <div class="field"><label>Max prijs (EUR)</label><input id="s-max-prijs" type="number"></div>
+    </div>
+    <div class="twee-col-form">
+      <div class="field"><label>Min rendement (%)</label><input id="s-min-rend" type="number" step="0.5"></div>
+      <div class="field"><label>Max pagina's</label><input id="s-max-pag" type="number"></div>
+    </div>
+    <div class="twee-col-form">
+      <div class="field"><label>Drempel GO</label><input id="s-go" type="number"></div>
+      <div class="field"><label>Drempel REVIEW</label><input id="s-review" type="number"></div>
+    </div>
+    <div class="field"><label>Scan interval (min)</label><input id="s-interval" type="number"></div>
+    <button class="save-btn" onclick="instellingenOpslaan()">Opslaan</button>
+    <div style="font-size:0.72rem;color:var(--text2)">Tip: na opslaan moet ge <span class="mono">scanner.py</span> herstarten op de Pi.</div>
+  </div>
+</div>
+
+<!-- DETAIL OVERLAY -->
+<div class="detail-overlay" id="detail-overlay" onclick="sluitDetailBuiten(event)">
+  <div class="detail-panel">
+    <div class="detail-header">
+      <div>
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.4rem">
+          <span class="pand-badge" id="d-badge">GO</span>
+          <span style="font-size:1.05rem;font-weight:700" id="d-titel">—</span>
+        </div>
+        <div style="font-size:0.8rem;color:var(--text2)" id="d-sub">—</div>
+      </div>
+      <div style="display:flex;gap:0.5rem;flex-shrink:0">
+        <a id="d-immoweb-link" href="#" target="_blank" class="immoweb-link">Immoweb →</a>
+        <button class="detail-close" onclick="sluitDetail()">✕</button>
+      </div>
+    </div>
+    <div class="detail-body">
+      <div class="twee-col">
+        <div class="info-block">
+          <div class="info-block-title">Financieel</div>
+          <div id="d-financieel"></div>
+        </div>
+        <div class="info-block">
+          <div class="info-block-title">Scorekaart</div>
+          <div class="score-bars" id="d-scores"></div>
+          <div style="margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:0.75rem;color:var(--text2)">Totaalscore</span>
+            <span class="mono" style="font-size:1rem;font-weight:600;color:var(--accent2)" id="d-totaal">—</span>
+          </div>
+        </div>
+      </div>
+      <div class="info-block" id="d-scenario-block">
+        <div class="info-block-title">Scenario's</div>
+        <div class="scenario-grid" id="d-scenarios"></div>
+      </div>
+      <div class="twee-col">
+        <div class="info-block">
+          <div class="info-block-title">Kansen</div>
+          <ul class="kansen-list" id="d-kansen"></ul>
+        </div>
+        <div class="info-block">
+          <div class="info-block-title">Risico's</div>
+          <ul class="risicos-list" id="d-risicos"></ul>
+        </div>
+      </div>
+      <div class="info-block">
+        <div class="info-block-title">AI beoordeling · <span id="d-strategie" style="color:var(--accent2)">—</span> · prioriteit <span id="d-prio">—</span>/10</div>
+        <p style="font-size:0.82rem;line-height:1.7;color:var(--text)" id="d-uitleg"></p>
+        <div class="tags" id="d-vlaggen"></div>
+      </div>
+      <div class="feedback-row">
+        <button class="btn-feedback btn-goed" id="btn-goed" onclick="geefFeedback('goed')">👍 Interessant</button>
+        <button class="btn-feedback btn-slecht" id="btn-slecht" onclick="geefFeedback('slecht')">👎 Niet interessant</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── CONFIG ───────────────────────────────────────────────────────────────────
+let API = localStorage.getItem('immo_api_url') || '';
+let huidigPandId = null;
+let huidigFilter = '';
+let chartsGemaakt = false;
+let chartGemeenten = null;
+let chartScores = null;
+
+const STRATEGIE_LABELS = {
+  'VERHUUR':'Verhuur','SLOOP_HERBOUW':'Sloop/herbouw',
+  'RENOVATIE_VERHUUR':'Renovatie + verhuur','DOORVERKOOP':'Doorverkoop'
+};
+const SCORE_KLEUREN = {
+  'locatie':'#818cf8','juridisch':'#60a5fa','financieel':'#22c55e',
+  'technisch':'#f59e0b','markt':'#f472b6','strategie':'#a78bfa'
+};
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+window.onload = function(){
+  const opgeslagen = localStorage.getItem('immo_api_url');
+  if(opgeslagen){
+    document.getElementById('api-url-input').value = opgeslagen;
+    verbinden(opgeslagen);
+  }
+  // Standaard instellingen tonen
+  document.getElementById('s-postcodes').value = localStorage.getItem('s-postcodes')||'3500, 3600, 3700, 3800, 3900';
+  document.getElementById('s-min-prijs').value = localStorage.getItem('s-min-prijs')||'0';
+  document.getElementById('s-max-prijs').value = localStorage.getItem('s-max-prijs')||'750000';
+  document.getElementById('s-min-rend').value  = localStorage.getItem('s-min-rend')||'3.5';
+  document.getElementById('s-max-pag').value   = localStorage.getItem('s-max-pag')||'10';
+  document.getElementById('s-go').value        = localStorage.getItem('s-go')||'75';
+  document.getElementById('s-review').value    = localStorage.getItem('s-review')||'60';
+  document.getElementById('s-interval').value  = localStorage.getItem('s-interval')||'30';
+};
+
+// ─── API VERBINDING ───────────────────────────────────────────────────────────
+function opslaanApiUrl(){
+  const url = document.getElementById('api-url-input').value.trim().replace(/\/$/,'');
+  if(!url){ alert('Vul een Pi adres in, bv. http://192.168.1.50:5000'); return; }
+  localStorage.setItem('immo_api_url', url);
+  verbinden(url);
+}
+
+async function verbinden(url){
+  API = url;
+  const statusEl = document.getElementById('api-status-tekst');
+  const dotEl = document.getElementById('status-dot');
+  const navEl = document.getElementById('status-tekst');
+  statusEl.className='api-status loading';
+  statusEl.textContent='verbinden...';
+  try{
+    const r = await fetch(API+'/api/dashboard',{signal:AbortSignal.timeout(5000)});
+    if(r.ok){
+      statusEl.className='api-status ok';
+      statusEl.textContent='verbonden';
+      dotEl.style.background='var(--go)';
+      navEl.textContent='scanner actief';
+      laadDashboard();
+      laadPanden();
+    } else throw new Error('HTTP '+r.status);
+  } catch(e){
+    statusEl.className='api-status err';
+    statusEl.textContent='fout: '+e.message;
+    dotEl.style.background='var(--reject)';
+    navEl.textContent='niet verbonden';
+  }
+}
+
+async function apiFetch(pad){
+  if(!API) return null;
+  try{
+    const r = await fetch(API+pad);
+    if(!r.ok) return null;
+    return await r.json();
+  } catch(e){ return null; }
+}
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+async function laadDashboard(){
+  const data = await apiFetch('/api/dashboard');
+  if(!data) return;
+  document.getElementById('m-go').textContent     = data.go??'—';
+  document.getElementById('m-review').textContent  = data.review??'—';
+  document.getElementById('m-reject').textContent  = data.reject??'—';
+  document.getElementById('m-gescand').textContent = (data.gescand||0).toLocaleString();
+  document.getElementById('m-aanroepen').textContent= (data.aanroepen||0)+' AI aanroepen';
+
+  const pct = Math.round((data.tokens_gebruikt||0)/(data.tokens_limiet||450000)*100);
+  document.getElementById('token-dag-bar').style.width = pct+'%';
+  document.getElementById('token-dag-bar').style.background = pct>80?'var(--reject)':pct>60?'var(--review)':'var(--accent)';
+  document.getElementById('token-dag-tekst').textContent = Math.round((data.tokens_gebruikt||0)/1000)+'k / '+Math.round((data.tokens_limiet||450000)/1000)+'k';
+
+  const wq = data.wachtrij||0;
+  document.getElementById('wachtrij-bar').style.width = Math.min(100,wq*10)+'%';
+  document.getElementById('wachtrij-tekst').textContent = wq+' panden';
+
+  // Laatste panden
+  const panden = await apiFetch('/api/panden');
+  const container = document.getElementById('dashboard-panden');
+  container.innerHTML='';
+  if(!panden||!panden.length){container.innerHTML='<div class="empty-state">Nog geen geanalyseerde panden vandaag.</div>';return;}
+  panden.filter(p=>p.beslissing!=='REJECT').slice(0,5).forEach(p=>container.appendChild(maakPandRij(p)));
+}
+
+// ─── PANDEN ───────────────────────────────────────────────────────────────────
+async function laadPanden(){
+  const pad = huidigFilter?'/api/panden?beslissing='+huidigFilter:'/api/panden';
+  const panden = await apiFetch(pad);
+  const container = document.getElementById('panden-lijst');
+  container.innerHTML='';
+  if(!panden||!panden.length){container.innerHTML='<div class="empty-state">Geen panden gevonden.</div>';return;}
+  document.getElementById('panden-count').textContent = panden.length+' panden';
+  panden.forEach(p=>container.appendChild(maakPandRij(p)));
+}
+
+function filterPanden(type,el){
+  huidigFilter=type;
+  document.querySelectorAll('#page-panden .filter-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  laadPanden();
+}
+
+function maakPandRij(p){
+  const div = document.createElement('div');
+  div.className='pand-row';
+  div.onclick=()=>openDetail(p);
+  const kleur = p.beslissing==='GO'?'var(--go)':p.beslissing==='REVIEW'?'var(--review)':'var(--reject)';
+  const stratLabel = STRATEGIE_LABELS[p.beste_strategie]||p.beste_strategie||'—';
+  div.innerHTML=`
+    <span class="pand-badge ${p.beslissing||'REVIEW'}">${p.beslissing||'?'}</span>
+    <div class="pand-info">
+      <h3>${p.gemeente||'?'} · ${p.straat||''} ${p.huisnummer||''}</h3>
+      <p>${p.type||'?'} · ${p.bewoonbare_opp||0}m² woning · ${p.perceel_opp||0}m² perceel</p>
+    </div>
+    <span class="pand-strategie">${stratLabel}</span>
+    <span class="pand-prijs">€ ${(p.prijs||0).toLocaleString()}</span>
+    <div class="pand-score-wrap">
+      <div class="score-num" style="color:${kleur}">${Math.round(p.totale_score||0)}</div>
+      <div class="score-label">/ 100</div>
+    </div>`;
+  return div;
+}
+
+// ─── DETAIL ───────────────────────────────────────────────────────────────────
+function openDetail(p){
+  huidigPandId = p.id;
+
+  const badge = document.getElementById('d-badge');
+  badge.textContent = p.beslissing||'?';
+  badge.className = 'pand-badge '+(p.beslissing||'REVIEW');
+
+  document.getElementById('d-titel').textContent = (p.gemeente||'?')+' · '+(p.straat||'')+(p.huisnummer?' '+p.huisnummer:'');
+  document.getElementById('d-sub').textContent = (p.type||'?')+' · '+(p.bewoonbare_opp||0)+'m² woning · '+(p.perceel_opp||0)+'m² perceel · bouwjaar '+(p.bouwjaar||'?')+' · EPC '+(p.epc_score||'?');
+  document.getElementById('d-uitleg').textContent = p.korte_uitleg||'Geen AI beoordeling beschikbaar.';
+  document.getElementById('d-strategie').textContent = STRATEGIE_LABELS[p.beste_strategie]||p.beste_strategie||'—';
+  document.getElementById('d-prio').textContent = p.prioriteit||'—';
+  document.getElementById('d-totaal').textContent = Math.round(p.totale_score||0)+'/100';
+
+  const link = document.getElementById('d-immoweb-link');
+  link.href = p.url||'#';
+  link.style.display = p.url?'inline-flex':'none';
+
+  // Financieel
+  const fin = [
+    ['Aankoopkost','€ '+(p.totale_aankoopkost||0).toLocaleString()],
+    ['Prijs/m²','€ '+(p.prijs_per_m2||0).toLocaleString()],
+    ['Perceel/m²','€ '+(p.prijs_per_m2_perceel||0).toLocaleString()],
+    ['Bruto rend.',(p.bruto_rendement||0)+'%'],
+    ['Netto rend.',(p.netto_rendement||0)+'%'],
+    ['Projectmarge',(p.project_marge||0)+'%'],
+    ['Geschat apps',p.geschat_apps||0],
+  ];
+  document.getElementById('d-financieel').innerHTML = fin.map(([k,v])=>`<div class="data-row"><span class="data-key">${k}</span><span class="data-val">${v}</span></div>`).join('');
+
+  // Scorekaart
+  const subscores = p.subscores||{};
+  document.getElementById('d-scores').innerHTML = Object.entries(subscores).map(([k,v])=>`
+    <div class="score-bar-row">
+      <span class="score-bar-label">${k.charAt(0).toUpperCase()+k.slice(1)}</span>
+      <div class="score-bar-track"><div class="score-bar-fill" style="width:${v}%;background:${SCORE_KLEUREN[k]||'var(--accent)'}"></div></div>
+      <span class="score-bar-val">${Math.round(v)}</span>
+    </div>`).join('');
+
+  // Scenarios
+  const sc = p.scenarios||{};
+  const scenarioVolgorde = ['pessimistisch','realistisch','optimistisch'];
+  const scenarioHtml = scenarioVolgorde.map(naam=>{
+    const s = sc[naam];
+    if(!s) return '';
+    const marge = s.marge_pct??s.rendement_pct??0;
+    const winst = s.winst!=null?'€ '+s.winst.toLocaleString():s.jaarhuur!=null?'€ '+s.jaarhuur.toLocaleString()+'/j':'';
+    return `<div class="scenario-card ${naam}">
+      <div class="scenario-name">${naam.charAt(0).toUpperCase()+naam.slice(1)}</div>
+      <div class="scenario-marge ${marge>=0?'pos':'neg'}">${marge}%</div>
+      <div class="scenario-winst">${winst}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('d-scenarios').innerHTML = scenarioHtml||'<span style="color:var(--text2);font-size:0.8rem">Geen scenario data.</span>';
+
+  // Kansen & risico's
+  document.getElementById('d-kansen').innerHTML=(p.kansen||[]).map(k=>`<li>${k}</li>`).join('')||'<li style="color:var(--text2)">—</li>';
+  document.getElementById('d-risicos').innerHTML=(p.risicos||[]).map(r=>`<li>${r}</li>`).join('')||'<li style="color:var(--text2)">—</li>';
+
+  // Vlaggen
+  document.getElementById('d-vlaggen').innerHTML=(p.zachte_vlaggen||[]).map(v=>`<span class="tag warn">${v.replace(/_/g,' ')}</span>`).join('');
+
+  document.getElementById('btn-goed').disabled=false;
+  document.getElementById('btn-slecht').disabled=false;
+  document.getElementById('detail-overlay').classList.add('open');
+}
+
+function sluitDetail(){ document.getElementById('detail-overlay').classList.remove('open'); }
+function sluitDetailBuiten(e){ if(e.target.id==='detail-overlay') sluitDetail(); }
+
+async function geefFeedback(type){
+  if(!API||!huidigPandId) return;
+  document.getElementById('btn-goed').disabled=true;
+  document.getElementById('btn-slecht').disabled=true;
+  try{
+    await fetch(API+'/api/feedback',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pand_id:huidigPandId, feedback:type})
+    });
+    alert(type==='goed'?'👍 Opgeslagen — de AI leert hiervan!':'👎 Opgeslagen — wordt lager gescoord in de toekomst.');
+    sluitDetail();
+  } catch(e){
+    alert('Fout bij opslaan feedback: '+e.message);
+  }
+}
+
+// ─── STATS ────────────────────────────────────────────────────────────────────
+async function laadStats(){
+  const data = await apiFetch('/api/stats');
+  if(!data) return;
+  document.getElementById('s-totaal').textContent      = data.totaal||'—';
+  document.getElementById('s-go-rate').textContent     = (data.go_rate||0)+'%';
+  document.getElementById('s-gem-score').textContent   = data.gem_score_go||'—';
+  document.getElementById('s-feedback').textContent    = (data.feedback_goed||0)+' / '+(data.feedback_slecht||0);
+
+  // Grafieken
+  const gemeenten = data.top_gemeenten||[];
+  const gLabels = gemeenten.map(g=>g[0]);
+  const gData   = gemeenten.map(g=>g[1]);
+
+  const scores = data.score_verdeling||{};
+  const sLabels = Object.keys(scores);
+  const sData   = Object.values(scores);
+
+  if(chartGemeenten) chartGemeenten.destroy();
+  if(chartScores)    chartScores.destroy();
+
+  chartGemeenten = new Chart(document.getElementById('chart-gemeenten'),{
+    type:'bar',
+    data:{labels:gLabels,datasets:[{data:gData,backgroundColor:'rgba(99,102,241,0.7)',borderRadius:4}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(255,255,255,0.05)'},ticks:{color:'#8888a8',font:{size:11}}},y:{grid:{display:false},ticks:{color:'#8888a8',font:{size:11}}}}}
+  });
+
+  const sKleuren = sData.map((_,i)=>['rgba(239,68,68,0.6)','rgba(239,68,68,0.4)','rgba(245,158,11,0.4)','rgba(245,158,11,0.6)','rgba(34,197,94,0.4)','rgba(34,197,94,0.6)','rgba(34,197,94,0.8)'][i]);
+  chartScores = new Chart(document.getElementById('chart-scores'),{
+    type:'bar',
+    data:{labels:sLabels,datasets:[{data:sData,backgroundColor:sKleuren,borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{color:'rgba(255,255,255,0.05)'},ticks:{color:'#8888a8',font:{size:11}}},y:{grid:{color:'rgba(255,255,255,0.05)'},ticks:{color:'#8888a8',font:{size:11}}}}}
+  });
+}
+
+// ─── LOGS ─────────────────────────────────────────────────────────────────────
+async function laadLogs(){
+  const data = await apiFetch('/api/logs');
+  const wrap = document.getElementById('log-wrap');
+  if(!data||!data.logs){ wrap.innerHTML='<div style="color:var(--text2)">Geen logs beschikbaar.</div>'; return; }
+  wrap.innerHTML = data.logs.map(r=>{
+    let cls = 'info';
+    if(r.includes('[ERROR]')) cls='error';
+    else if(r.includes('[WARNING]')) cls='warn';
+    else if(r.includes('GO')||r.includes('melding!')) cls='go';
+    return `<div class="log-line ${cls}">${r}</div>`;
+  }).join('');
+  wrap.scrollTop = wrap.scrollHeight;
+}
+
+// ─── INSTELLINGEN ─────────────────────────────────────────────────────────────
+function instellingenOpslaan(){
+  const velden = ['s-postcodes','s-min-prijs','s-max-prijs','s-min-rend','s-max-pag','s-go','s-review','s-interval'];
+  velden.forEach(id=>localStorage.setItem(id, document.getElementById(id).value));
+  alert('Instellingen opgeslagen!\n\nVergeet niet om config.py op de Pi handmatig aan te passen en scanner.py te herstarten.');
+}
+
+// ─── PAGINA NAVIGATIE ─────────────────────────────────────────────────────────
+function showPage(page, el){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-link').forEach(n=>n.classList.remove('active'));
+  document.getElementById('page-'+page).classList.add('active');
+  el.classList.add('active');
+  if(page==='stats') laadStats();
+  if(page==='logs')  laadLogs();
+}
+
+// Auto-refresh elke 60 seconden
+setInterval(()=>{
+  if(API){
+    const activePage = document.querySelector('.page.active');
+    if(activePage&&activePage.id==='page-dashboard') laadDashboard();
+  }
+}, 60000);
+</script>
+</body>
+</html>
