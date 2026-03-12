@@ -31,3 +31,8 @@ PRIORITEER_WACHTRIJ = True
 
 # --- LOGGING ---
 TOKEN_LOG_BESTAND = "token_gebruik.json"
+
+# --- GO / REVIEW / REJECT DREMPELS ---
+DREMPEL_GO     = 75   # Totaalscore >= 75 → GO (automatisch in pipeline)
+DREMPEL_REVIEW = 60   # Totaalscore >= 60 → REVIEW (menselijke check)
+# < 60 → REJECT

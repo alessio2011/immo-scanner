@@ -25,6 +25,8 @@ from scrapers.immoweb import haal_advertenties_op, verwerk_pand
 from analysis.berekeningen import bereken_metrics, is_interessant
 from analysis.ai_analyse import analyseer_pand_met_ai
 from analysis.token_tracker import tokens_in_laatste_minuut, tokens_vandaag, budget_status
+from analysis.harde_regels import check_harde_regels, check_zachte_vlaggen
+from analysis.scorekaart import voer_scorekaart_uit, bepaal_beslissing
 from notifications.telegram import stuur_melding, stuur_opstart_bericht, verwerk_feedback_updates
 from analysis.feedback import sla_pand_op_voor_feedback, haal_pand_op_voor_feedback, sla_feedback_op
 
@@ -94,6 +96,13 @@ def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list) -> tuple[set, list]:
         try:
             pand = verwerk_pand(pand_data)
             metrics = bereken_metrics(pand)
+
+            # Harde uitsluitregels — direct stoppen
+            heeft_rode_vlag, rode_vlaggen = check_harde_regels(pand, metrics)
+            if heeft_rode_vlag:
+                logger.debug(f"  🚫 Rode vlag {rode_vlaggen} → skip {pand.get('gemeente')}")
+                continue
+
             interessant, _ = is_interessant(metrics, config.MIN_RENDEMENT)
 
             if interessant:
@@ -165,12 +174,24 @@ def analyseer_batch(wachtrij: list, aantal: int) -> list:
             ai_analyse = analyseer_pand_met_ai(pand, metrics, config.ANTHROPIC_API_KEY)
             aanbeveling = ai_analyse.get("aanbeveling", "NEUTRAAL")
 
-            if aanbeveling in ["STERK_AAN", "AAN"]:
-                logger.info(f"  🔥 {aanbeveling} prio {ai_analyse.get('prioriteit')}/10 → melding!")
+            # Scorekaart berekenen
+            zachte_vlaggen = check_zachte_vlaggen(pand, metrics)
+            scorekaart = voer_scorekaart_uit(pand, metrics, zachte_vlaggen=zachte_vlaggen)
+            totale_score = scorekaart["totale_score"]
+
+            drempel_go     = getattr(config2, 'DREMPEL_GO', 75)
+            drempel_review = getattr(config2, 'DREMPEL_REVIEW', 60)
+            beslissing, acties = bepaal_beslissing(totale_score, [], drempel_go, drempel_review)
+
+            ai_analyse["beslissing"] = beslissing
+            ai_analyse["totale_score"] = totale_score
+
+            if aanbeveling in ["STERK_AAN", "AAN"] or beslissing in ["GO", "REVIEW"]:
+                logger.info(f"  🔥 {aanbeveling} | Score {totale_score}/100 | {beslissing} → melding!")
                 sla_pand_op_voor_feedback(pand_id, pand, metrics, ai_analyse)
-                stuur_melding(pand, metrics, ai_analyse, config)
+                stuur_melding(pand, metrics, ai_analyse, config, scorekaart=scorekaart)
             else:
-                logger.info(f"  ➡️  {aanbeveling} → geen melding")
+                logger.info(f"  ➡️  {aanbeveling} | Score {totale_score}/100 | {beslissing} → geen melding")
 
         except Exception as e:
             logger.error(f"Fout bij analyse {pand_id}: {e}")
