@@ -18,7 +18,7 @@ import time
 from analysis.locatie_info import haal_gemeente_info_op, formatteer_locatie_context
 from analysis.feedback import genereer_lessen_voor_ai
 from analysis.token_tracker import kan_aanroepen, registreer_gebruik, budget_status
-import config2
+import instellingen as config2
 
 logger = logging.getLogger(__name__)
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"

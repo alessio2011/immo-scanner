@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import config2
+import instellingen
 from scrapers.immoweb import haal_advertenties_op, verwerk_pand
 from analysis.berekeningen import bereken_metrics, is_interessant
 from analysis.gemini_analyse import analyseer_pand_met_gemini  # Primair: gratis
@@ -46,18 +46,18 @@ WACHTRIJ_BESTAND = Path("ai_wachtrij.json")
 PENDING_DIR      = Path("pending_feedback")
 PENDING_DIR.mkdir(exist_ok=True)
 
-# Config laden
+# Secrets laden
 try:
-    import config as _cfg
-    TELEGRAM_BOT_TOKEN = getattr(_cfg, "TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_ADMIN_ID  = getattr(_cfg, "TELEGRAM_CHAT_ID", "")
-    GEMINI_API_KEY     = getattr(_cfg, "GEMINI_API_KEY", "")   # Primair
-    GROQ_API_KEY       = getattr(_cfg, "ANTHROPIC_API_KEY", "") # Fallback (Groq key)
+    import secrets as _sec
+    TELEGRAM_BOT_TOKEN = getattr(_sec, "TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_ADMIN_ID  = getattr(_sec, "TELEGRAM_ADMIN_ID",  "")
+    GEMINI_API_KEY     = getattr(_sec, "GEMINI_API_KEY",     "")
+    GROQ_API_KEY       = getattr(_sec, "GROQ_API_KEY",       "")
 except Exception as e:
-    logger.error(f"Config laden fout: {e}")
+    logger.error(f"secrets.py laden fout: {e}")
     TELEGRAM_BOT_TOKEN = TELEGRAM_ADMIN_ID = GEMINI_API_KEY = GROQ_API_KEY = ""
 
-GEBRUIK_GEMINI = bool(GEMINI_API_KEY)  # Automatisch switchen
+GEBRUIK_GEMINI = bool(GEMINI_API_KEY)
 
 
 # ─── USERS ───────────────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list, postcodes: set, users
         postcodes=list(postcodes),
         max_prijs=max_prijs,
         min_prijs=0,
-        max_paginas=getattr(config2, "MAX_PAGINAS", 10)
+        max_paginas=instellingen.MAX_PAGINAS
     )
 
     nieuwe = 0
@@ -181,7 +181,7 @@ def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list, postcodes: set, users
         except Exception as e:
             logger.error(f"Fout bij verwerken {pand_id}: {e}")
 
-    if config2.PRIORITEER_WACHTRIJ:
+    if instellingen.PRIORITEER_WACHTRIJ:
         wachtrij.sort(key=lambda x: x.get("score", 0), reverse=True)
 
     logger.info(f"✅ Scrape: {nieuwe} nieuw, {toegevoegd} toegevoegd → wachtrij: {len(wachtrij)}")
@@ -202,7 +202,7 @@ def analyseer_batch(wachtrij: list, users: list) -> list:
     if not wachtrij:
         return wachtrij
     if not GEMINI_API_KEY and not GROQ_API_KEY:
-        logger.error("❌ Geen AI API key! Voeg GEMINI_API_KEY of ANTHROPIC_API_KEY toe aan config.py")
+        logger.error("❌ Geen AI API key! Voeg GEMINI_API_KEY of GROQ_API_KEY toe aan secrets.py")
         return wachtrij
 
     # Max 5 per cyclus — Pi-vriendelijk
@@ -238,7 +238,7 @@ def analyseer_batch(wachtrij: list, users: list) -> list:
             zachte_vlaggen = check_zachte_vlaggen(pand, metrics)
             scorekaart     = voer_scorekaart_uit(pand, metrics, zachte_vlaggen=zachte_vlaggen)
             totale_score   = scorekaart["totale_score"]
-            beslissing, _  = bepaal_beslissing(totale_score, [], config2.DREMPEL_GO, config2.DREMPEL_REVIEW)
+            beslissing, _  = bepaal_beslissing(totale_score, [], instellingen.DREMPEL_GO, instellingen.DREMPEL_REVIEW)
 
             ai_analyse["beslissing"]     = beslissing
             ai_analyse["totale_score"]   = totale_score
@@ -251,7 +251,7 @@ def analyseer_batch(wachtrij: list, users: list) -> list:
 
                 # ── Juridische verkenning ─────────────────────────────────
                 try:
-                    jur_model = "gemini" if GEBRUIK_GEMINI else config2.GROQ_MODEL_KRACHTIG
+                    jur_model = "gemini" if GEBRUIK_GEMINI else instellingen.GROQ_MODEL_KRACHTIG
                     jur_key   = GEMINI_API_KEY if GEBRUIK_GEMINI else GROQ_API_KEY
                     ai_analyse["juridisch"] = voer_juridische_verkenning_uit(
                         pand, metrics, jur_key, jur_model
@@ -311,7 +311,7 @@ def main():
         logger.info("🤖 AI: Groq trechtersysteem (Gemini key niet gevonden)")
     else:
         logger.error("❌ Geen AI key gevonden!")
-        logger.error("   Voeg toe aan config.py:")
+        logger.error("   Voeg toe aan secrets.py:")
         logger.error("   GEMINI_API_KEY = 'AIza...'  ← ophalen via aistudio.google.com")
         logger.error("   of ANTHROPIC_API_KEY = 'gsk_...'  ← Groq key")
         return

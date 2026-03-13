@@ -7,7 +7,6 @@ Bereikbaar via Cloudflare Tunnel op je eigen domein
 """
 
 from flask import Flask, jsonify, request, make_response, send_from_directory
-from flask_cors import CORS
 from pathlib import Path
 import json
 from datetime import datetime
@@ -15,7 +14,7 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import config2
+import instellingen
 from auth import (
     registreer, login, logout, valideer_sessie,
     haal_config_op, update_config, sla_onboarding_op,

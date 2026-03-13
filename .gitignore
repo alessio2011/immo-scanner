@@ -1,0 +1,24 @@
+# !! NOOIT OP GITHUB !!
+secrets.py
+
+# Gegenereerde data
+geziene_panden.json
+ai_wachtrij.json
+token_gebruik.json
+dagrapport_status.json
+immo_scanner.log
+api.log
+
+# Users & sessies
+users/users.json
+users/sessions.json
+users/panden/
+
+# Pand data
+pending_feedback/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.env
