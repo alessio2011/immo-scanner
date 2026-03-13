@@ -4,35 +4,38 @@
 # Hier staan alle nieuwe/extra instellingen
 # ============================================================
 
-# --- TOKEN BUDGET (Groq gratis plan) ---
-# Groq gratis: 6000 tokens/minuut, 500.000 tokens/dag
-TOKENS_PER_MINUUT_LIMIET = 6000     # Veilige limiet (officieel 6000/min)
-TOKENS_PER_DAG_LIMIET    = 450_000  # Veilige limiet (officieel 500k/dag)
-
-# Geschatte tokenkosten per stap
-TOKENS_SNELLE_CHECK   = 400   # Stap 1: alleen cijfers beoordelen (goedkoop)
-TOKENS_LOCATIE_CHECK  = 600   # Stap 2: locatie + Wikipedia erbij
-TOKENS_FOTO_ANALYSE   = 500   # Stap 3: foto's analyseren
-TOKENS_VOLLEDIGE_AI   = 1200  # Stap 4: volledige diepgaande analyse
-
-# Minimale score na snelle check om door te gaan naar volgende stap
-DREMPEL_SNELLE_CHECK  = 50    # Score /100 na stap 1
-DREMPEL_LOCATIE_CHECK = 60    # Score /100 na stap 2
-
 # --- AI MODEL KEUZE ---
-# Goedkoop snel model voor snelle checks
-GROQ_MODEL_SNEL    = "llama-3.1-8b-instant"    # Weinig tokens, snel
-# Krachtig model voor volledige analyse
-GROQ_MODEL_KRACHTIG = "llama-3.3-70b-versatile" # Meer tokens, beter
+# Primair: Gemini Flash 2.0 (gratis, 1.500 aanroepen/dag, sterk)
+# Fallback: Groq als GEMINI_API_KEY niet ingesteld is in config.py
+GEMINI_MODEL        = "gemini-2.0-flash"       # Primair model
+GEMINI_MODEL_BACKUP = "gemini-1.5-flash"        # Backup bij overbelasting
+GEMINI_MIN_INTERVAL = 4.5                       # Seconden tussen calls (gratis: 15/min)
 
-# --- WACHTRIJ PRIORITEIT ---
-# Panden met hogere score krijgen voorrang in de wachtrij
+# Groq modellen (fallback als geen Gemini key)
+GROQ_MODEL_SNEL     = "llama-3.1-8b-instant"
+GROQ_MODEL_KRACHTIG = "llama-3.3-70b-versatile"
+
+# --- TOKEN BUDGET (alleen relevant als Groq gebruikt wordt) ---
+TOKENS_PER_MINUUT_LIMIET = 6000
+TOKENS_PER_DAG_LIMIET    = 450_000
+TOKENS_SNELLE_CHECK      = 400
+TOKENS_LOCATIE_CHECK     = 600
+TOKENS_FOTO_ANALYSE      = 500
+TOKENS_VOLLEDIGE_AI      = 1200
+TOKENS_JURIDISCH         = 900
+
+# Drempels voor Groq trechtersysteem
+DREMPEL_SNELLE_CHECK  = 50
+DREMPEL_LOCATIE_CHECK = 60
+
+# --- WACHTRIJ ---
 PRIORITEER_WACHTRIJ = True
+MAX_PAGINAS         = 10   # Pagina's per postcode per scan
 
 # --- LOGGING ---
 TOKEN_LOG_BESTAND = "token_gebruik.json"
 
 # --- GO / REVIEW / REJECT DREMPELS ---
-DREMPEL_GO     = 75   # Totaalscore >= 75 → GO (automatisch in pipeline)
-DREMPEL_REVIEW = 60   # Totaalscore >= 60 → REVIEW (menselijke check)
+DREMPEL_GO     = 75   # Totaalscore >= 75 → GO
+DREMPEL_REVIEW = 60   # Totaalscore >= 60 → REVIEW
 # < 60 → REJECT

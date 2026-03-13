@@ -1,34 +1,35 @@
 """
-IMMO SCANNER - Hoofdscript
+IMMO SCANNER — Multi-user versie
 Draait dag en nacht op de Raspberry Pi.
 
 Werking:
-- Elke 30 min: Immoweb scrapen → nieuwe panden in wachtrij
-- Elke cyclus: kijk hoeveel tokens over → analyseer zoveel als past
-- Trechtersysteem: goedkope check eerst, dure analyse alleen als nodig
-- Feedback van Telegram knoppen verwerken bij elke cyclus
+- Scant GLOBAAL over de unie van alle user-postcodes
+- Analyseert met Gemini AI (gratis, geen tokenlimieten)
+- GO/REVIEW panden zichtbaar voor relevante users via website
+- Telegram enkel voor ADMIN: GO panden, REVIEW panden (stil), fouten, dagrapport
+- Gewone users: alleen website (en later app)
 """
 
-import sys
-import os
-import time
-import json
-import logging
+import sys, os, time, json, logging
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import config
 import config2
 from scrapers.immoweb import haal_advertenties_op, verwerk_pand
 from analysis.berekeningen import bereken_metrics, is_interessant
-from analysis.ai_analyse import analyseer_pand_met_ai
-from analysis.token_tracker import tokens_in_laatste_minuut, tokens_vandaag, budget_status
+from analysis.gemini_analyse import analyseer_pand_met_gemini  # Primair: gratis
+from analysis.ai_analyse import analyseer_pand_met_ai          # Fallback: Groq
 from analysis.harde_regels import check_harde_regels, check_zachte_vlaggen
 from analysis.scorekaart import voer_scorekaart_uit, bepaal_beslissing
-from notifications.telegram import stuur_melding, stuur_opstart_bericht, verwerk_feedback_updates
+from analysis.juridisch import voer_juridische_verkenning_uit
 from analysis.feedback import sla_pand_op_voor_feedback, haal_pand_op_voor_feedback, sla_feedback_op
+from notifications.telegram import (
+    stuur_opstart_bericht, stuur_go_melding, stuur_review_melding,
+    stuur_fout_melding, check_dagrapport, verwerk_feedback_updates_multi
+)
+from auth import _laad_users
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,9 +43,41 @@ logger = logging.getLogger(__name__)
 
 GEZIEN_BESTAND   = Path("geziene_panden.json")
 WACHTRIJ_BESTAND = Path("ai_wachtrij.json")
+PENDING_DIR      = Path("pending_feedback")
+PENDING_DIR.mkdir(exist_ok=True)
+
+# Config laden
+try:
+    import config as _cfg
+    TELEGRAM_BOT_TOKEN = getattr(_cfg, "TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_ADMIN_ID  = getattr(_cfg, "TELEGRAM_CHAT_ID", "")
+    GEMINI_API_KEY     = getattr(_cfg, "GEMINI_API_KEY", "")   # Primair
+    GROQ_API_KEY       = getattr(_cfg, "ANTHROPIC_API_KEY", "") # Fallback (Groq key)
+except Exception as e:
+    logger.error(f"Config laden fout: {e}")
+    TELEGRAM_BOT_TOKEN = TELEGRAM_ADMIN_ID = GEMINI_API_KEY = GROQ_API_KEY = ""
+
+GEBRUIK_GEMINI = bool(GEMINI_API_KEY)  # Automatisch switchen
 
 
-# ─── HULPFUNCTIES ────────────────────────────────────────────────────────────
+# ─── USERS ───────────────────────────────────────────────────────────────────
+
+def haal_actieve_users() -> list:
+    return list(_laad_users().values())
+
+def haal_alle_postcodes(users: list) -> set:
+    """Unie van alle postcodes van alle users — dit is wat globaal gescand wordt."""
+    postcodes = set()
+    for user in users:
+        for pc in user.get("config", {}).get("postcodes", []):
+            postcodes.add(str(pc))
+    return postcodes
+
+def is_admin(user: dict) -> bool:
+    return user.get("rol") == "admin"
+
+
+# ─── OPSLAG ──────────────────────────────────────────────────────────────────
 
 def laad_geziene_panden() -> set:
     if GEZIEN_BESTAND.exists():
@@ -66,19 +99,52 @@ def sla_wachtrij_op(wachtrij: list):
     with open(WACHTRIJ_BESTAND, "w") as f:
         json.dump(wachtrij, f, ensure_ascii=False)
 
+def sla_pand_op_globaal(pand_id: str, pand: dict, metrics: dict, ai_analyse: dict):
+    """Slaat pand op zodat alle users het kunnen zien via de API."""
+    bestand = PENDING_DIR / f"{pand_id}.json"
+    with open(bestand, "w", encoding="utf-8") as f:
+        json.dump({
+            "pand": pand, "metrics": metrics, "ai_analyse": ai_analyse,
+            "opgeslagen": datetime.now().isoformat()
+        }, f, ensure_ascii=False, indent=2)
 
-# ─── STAP 1: SCRAPEN ─────────────────────────────────────────────────────────
+def tel_resultaten_vandaag() -> dict:
+    """Telt GO/REVIEW/REJECT van vandaag voor dagrapport."""
+    vandaag = datetime.now().date().isoformat()
+    go = review = 0
+    for f in PENDING_DIR.glob("*.json"):
+        if f.stat().st_mtime and datetime.fromtimestamp(f.stat().st_mtime).date().isoformat() == vandaag:
+            try:
+                with open(f) as fp:
+                    data = json.load(fp)
+                beslissing = data.get("ai_analyse", {}).get("beslissing", "")
+                if beslissing == "GO":    go += 1
+                elif beslissing == "REVIEW": review += 1
+            except Exception:
+                pass
+    gezien = laad_geziene_panden()
+    return {"go": go, "review": review, "reject": max(0, len(gezien) - go - review),
+            "gescand": len(gezien)}
 
-def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list) -> tuple[set, list]:
-    """Haalt nieuwe panden op en zet interessante in de wachtrij."""
-    logger.info("🔍 Immoweb scrapen...")
 
-    postcodes = config.REGIO_POSTCODES if config.REGIO_POSTCODES else [None]
+# ─── SCRAPEN ─────────────────────────────────────────────────────────────────
+
+def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list, postcodes: set, users: list) -> tuple[set, list]:
+    if not postcodes:
+        logger.info("⏳ Geen postcodes — wachten op eerste gebruiker die onboarding doet...")
+        return geziene_ids, wachtrij
+
+    logger.info(f"🔍 Globaal scrapen: {len(postcodes)} postcodes")
+
+    # Meest inclusief: hoogste max_prijs, laagste min_rendement van alle users
+    max_prijs = max((u.get("config", {}).get("max_prijs", 600000) for u in users), default=600000)
+    min_rend  = min((u.get("config", {}).get("min_rendement", 3.5) for u in users), default=3.5)
+
     panden = haal_advertenties_op(
-        postcodes=postcodes,
-        max_prijs=config.MAX_PRIJS,
-        min_prijs=config.MIN_PRIJS,
-        max_paginas=getattr(config, 'MAX_PAGINAS', 10)
+        postcodes=list(postcodes),
+        max_prijs=max_prijs,
+        min_prijs=0,
+        max_paginas=getattr(config2, "MAX_PAGINAS", 10)
     )
 
     nieuwe = 0
@@ -94,181 +160,231 @@ def scrape_nieuwe_panden(geziene_ids: set, wachtrij: list) -> tuple[set, list]:
         nieuwe += 1
 
         try:
-            pand = verwerk_pand(pand_data)
+            pand    = verwerk_pand(pand_data)
             metrics = bereken_metrics(pand)
 
-            # Harde uitsluitregels — direct stoppen
             heeft_rode_vlag, rode_vlaggen = check_harde_regels(pand, metrics)
             if heeft_rode_vlag:
-                logger.debug(f"  🚫 Rode vlag {rode_vlaggen} → skip {pand.get('gemeente')}")
+                logger.debug(f"  🚫 {rode_vlaggen} → skip {pand.get('gemeente')}")
                 continue
 
-            interessant, _ = is_interessant(metrics, config.MIN_RENDEMENT)
-
+            interessant, _ = is_interessant(metrics, min_rend)
             if interessant:
                 wachtrij.append({
-                    "pand_id": pand_id,
-                    "pand": pand,
-                    "metrics": metrics,
+                    "pand_id": pand_id, "pand": pand, "metrics": metrics,
                     "score": metrics.get("interessantheid_score", 0),
                     "toegevoegd": datetime.now().isoformat()
                 })
                 toegevoegd += 1
-                logger.info(f"  ➕ {pand.get('gemeente')} €{pand.get('prijs', 0):,} (score {metrics.get('interessantheid_score', 0)})")
+                logger.info(f"  ➕ {pand.get('gemeente')} €{pand.get('prijs',0):,} (postcode {pand.get('postcode')})")
 
         except Exception as e:
             logger.error(f"Fout bij verwerken {pand_id}: {e}")
 
-    # Sorteer wachtrij op score — beste panden eerst
     if config2.PRIORITEER_WACHTRIJ:
         wachtrij.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    logger.info(f"✅ Scrape klaar: {nieuwe} nieuw, {toegevoegd} toegevoegd, {len(wachtrij)} in wachtrij")
+    logger.info(f"✅ Scrape: {nieuwe} nieuw, {toegevoegd} toegevoegd → wachtrij: {len(wachtrij)}")
     return geziene_ids, wachtrij
 
 
-# ─── STAP 2: SLIM AI BUDGET BEHEER ───────────────────────────────────────────
+# ─── AI ANALYSE ──────────────────────────────────────────────────────────────
 
-def hoeveel_analyses_mogelijk() -> int:
+def analyseer_batch(wachtrij: list, users: list) -> list:
     """
-    Kijkt hoeveel tokens er over zijn en schat hoeveel analyses nog passen.
-    Een volledige analyse kost ~2700 tokens (alle stappen samen).
+    Analyseert panden met AI.
+    Primair: Gemini Flash 2.0 (gratis, geen tokenlimieten)
+    Fallback: Groq trechtersysteem (als Gemini key ontbreekt)
+
+    GO/REVIEW → globaal opslaan + admin Telegram melding.
+    Gewone users → zien het via website, geen Telegram.
     """
-    minuut_over = config2.TOKENS_PER_MINUUT_LIMIET - tokens_in_laatste_minuut()
-    dag_over = config2.TOKENS_PER_DAG_LIMIET - tokens_vandaag()
-
-    tokens_per_analyse = (
-        config2.TOKENS_SNELLE_CHECK +
-        config2.TOKENS_LOCATIE_CHECK +
-        config2.TOKENS_FOTO_ANALYSE +
-        config2.TOKENS_VOLLEDIGE_AI
-    )
-
-    # Hoeveel passen er in de minuut? En hoeveel zijn er nog over voor vandaag?
-    mogelijk_minuut = int(minuut_over * 0.80 / tokens_per_analyse)  # 80% van over
-    mogelijk_dag    = int(dag_over / tokens_per_analyse)
-
-    aantal = min(mogelijk_minuut, mogelijk_dag, 3)  # Max 3 tegelijk
-    return max(0, aantal)
-
-
-def analyseer_batch(wachtrij: list, aantal: int) -> list:
-    """Analyseert een batch van panden uit de wachtrij."""
-    if not wachtrij or aantal == 0:
+    if not wachtrij:
+        return wachtrij
+    if not GEMINI_API_KEY and not GROQ_API_KEY:
+        logger.error("❌ Geen AI API key! Voeg GEMINI_API_KEY of ANTHROPIC_API_KEY toe aan config.py")
         return wachtrij
 
-    logger.info(f"🤖 Batch analyse: {aantal} pand(en) van {len(wachtrij)} in wachtrij")
+    # Max 5 per cyclus — Pi-vriendelijk
+    aantal = min(len(wachtrij), 5)
+    ai_naam = "Gemini" if GEBRUIK_GEMINI else "Groq"
+    logger.info(f"🤖 {ai_naam} analyse: {aantal} panden")
 
-    for _ in range(min(aantal, len(wachtrij))):
+    for _ in range(aantal):
         if not wachtrij:
             break
 
-        item = wachtrij.pop(0)
+        item    = wachtrij.pop(0)
         pand    = item["pand"]
         metrics = item["metrics"]
         pand_id = item["pand_id"]
+        gemeente = pand.get("gemeente", "?")
 
-        logger.info(f"🔬 Analyseren: {pand.get('gemeente')} €{pand.get('prijs', 0):,}")
+        logger.info(f"🔬 Analyseren: {gemeente} €{pand.get('prijs',0):,}")
 
         try:
-            ai_analyse = analyseer_pand_met_ai(pand, metrics, config.ANTHROPIC_API_KEY)
-            aanbeveling = ai_analyse.get("aanbeveling", "NEUTRAAL")
+            # ── AI analyse ────────────────────────────────────────────────
+            if GEBRUIK_GEMINI:
+                ai_analyse = analyseer_pand_met_gemini(pand, metrics, GEMINI_API_KEY)
+                # Als Gemini mislukt, probeer Groq
+                if ai_analyse.get("aanbeveling") == "NEUTRAAL" and "mislukt" in ai_analyse.get("korte_uitleg", ""):
+                    if GROQ_API_KEY:
+                        logger.info(f"  ↩️  Gemini mislukt — Groq fallback")
+                        ai_analyse = analyseer_pand_met_ai(pand, metrics, GROQ_API_KEY)
+            else:
+                ai_analyse = analyseer_pand_met_ai(pand, metrics, GROQ_API_KEY)
 
-            # Scorekaart berekenen
+            # ── Scorekaart ────────────────────────────────────────────────
             zachte_vlaggen = check_zachte_vlaggen(pand, metrics)
-            scorekaart = voer_scorekaart_uit(pand, metrics, zachte_vlaggen=zachte_vlaggen)
-            totale_score = scorekaart["totale_score"]
+            scorekaart     = voer_scorekaart_uit(pand, metrics, zachte_vlaggen=zachte_vlaggen)
+            totale_score   = scorekaart["totale_score"]
+            beslissing, _  = bepaal_beslissing(totale_score, [], config2.DREMPEL_GO, config2.DREMPEL_REVIEW)
 
-            drempel_go     = getattr(config2, 'DREMPEL_GO', 75)
-            drempel_review = getattr(config2, 'DREMPEL_REVIEW', 60)
-            beslissing, acties = bepaal_beslissing(totale_score, [], drempel_go, drempel_review)
-
-            ai_analyse["beslissing"] = beslissing
-            ai_analyse["totale_score"] = totale_score
-            ai_analyse["subscores"] = scorekaart.get("subscores", {})
-            ai_analyse["scenarios"] = scorekaart.get("scenarios", {})
+            ai_analyse["beslissing"]     = beslissing
+            ai_analyse["totale_score"]   = totale_score
+            ai_analyse["subscores"]      = scorekaart.get("subscores", {})
+            ai_analyse["scenarios"]      = scorekaart.get("scenarios", {})
             ai_analyse["zachte_vlaggen"] = zachte_vlaggen
 
-            if aanbeveling in ["STERK_AAN", "AAN"] or beslissing in ["GO", "REVIEW"]:
-                logger.info(f"  🔥 {aanbeveling} | Score {totale_score}/100 | {beslissing} → melding!")
+            if beslissing in ["GO", "REVIEW"]:
+                logger.info(f"  {'🔥' if beslissing=='GO' else '👀'} {beslissing} | {totale_score}/100 | {gemeente}")
+
+                # ── Juridische verkenning ─────────────────────────────────
+                try:
+                    jur_model = "gemini" if GEBRUIK_GEMINI else config2.GROQ_MODEL_KRACHTIG
+                    jur_key   = GEMINI_API_KEY if GEBRUIK_GEMINI else GROQ_API_KEY
+                    ai_analyse["juridisch"] = voer_juridische_verkenning_uit(
+                        pand, metrics, jur_key, jur_model
+                    )
+                except Exception as e:
+                    logger.warning(f"  Juridisch fout: {e}")
+                    ai_analyse["juridisch"] = None
+
+                # ── Globaal opslaan — zichtbaar voor alle users ───────────
+                sla_pand_op_globaal(pand_id, pand, metrics, ai_analyse)
                 sla_pand_op_voor_feedback(pand_id, pand, metrics, ai_analyse)
-                stuur_melding(pand, metrics, ai_analyse, config, scorekaart=scorekaart)
+
+                # ── Admin Telegram melding ────────────────────────────────
+                if TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_ID:
+                    try:
+                        if beslissing == "GO":
+                            stuur_go_melding(pand, metrics, ai_analyse,
+                                             TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID, scorekaart=scorekaart)
+                            logger.info(f"  📱 GO melding → admin")
+                        else:
+                            stuur_review_melding(pand, metrics, ai_analyse,
+                                                 TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID)
+                            logger.info(f"  📱 REVIEW melding → admin (stil)")
+                    except Exception as e:
+                        logger.warning(f"  Telegram fout: {e}")
+                # ── Gewone users: GEEN Telegram → alleen website ──────────
+
             else:
-                logger.info(f"  ➡️  {aanbeveling} | Score {totale_score}/100 | {beslissing} → geen melding")
+                logger.info(f"  ➡️  REJECT | {totale_score}/100 | {gemeente}")
+
+            time.sleep(3)  # Pi-vriendelijk, Gemini rate limit respecteren
 
         except Exception as e:
             logger.error(f"Fout bij analyse {pand_id}: {e}")
-            wachtrij.insert(0, item)  # Terug in wachtrij bij fout
+            try:
+                stuur_fout_melding(f"Analyse {pand_id}: {str(e)[:200]}", TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID)
+            except Exception:
+                pass
+            wachtrij.insert(0, item)
             break
 
     return wachtrij
 
 
-# ─── HOOFDLUS ─────────────────────────────────────────────────────────────────
+# ─── HOOFDLUS ────────────────────────────────────────────────────────────────
 
 def main():
-    logger.info("=" * 50)
-    logger.info("🏠 IMMO SCANNER GESTART")
-    logger.info("=" * 50)
+    logger.info("=" * 55)
+    logger.info("🏠 IMMOVATE — Multi-user | Admin-only Telegram")
+    logger.info("=" * 55)
 
-    if config.TELEGRAM_BOT_TOKEN == "UW_BOT_TOKEN_HIER":
-        logger.error("❌ Telegram token niet ingesteld in config.py!")
-        sys.exit(1)
+    if GEBRUIK_GEMINI:
+        logger.info("🤖 AI: Gemini Flash 2.0 (gratis, geen tokenlimieten)")
+        if GROQ_API_KEY:
+            logger.info("   ↩️  Groq als fallback geconfigureerd")
+    elif GROQ_API_KEY:
+        logger.info("🤖 AI: Groq trechtersysteem (Gemini key niet gevonden)")
+    else:
+        logger.error("❌ Geen AI key gevonden!")
+        logger.error("   Voeg toe aan config.py:")
+        logger.error("   GEMINI_API_KEY = 'AIza...'  ← ophalen via aistudio.google.com")
+        logger.error("   of ANTHROPIC_API_KEY = 'gsk_...'  ← Groq key")
+        return
 
-    stuur_opstart_bericht(config)
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_ID:
+        stuur_opstart_bericht(TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID)
+        logger.info(f"📱 Telegram admin meldingen actief → {TELEGRAM_ADMIN_ID}")
+    else:
+        logger.warning("⚠️ Telegram niet geconfigureerd — geen admin meldingen")
 
-    geziene_ids  = laad_geziene_panden()
-    wachtrij     = laad_wachtrij()
-    logger.info(f"📋 {len(geziene_ids)} panden al gezien, {len(wachtrij)} in wachtrij")
+    geziene_ids   = laad_geziene_panden()
+    wachtrij      = laad_wachtrij()
+    logger.info(f"📋 {len(geziene_ids)} panden al gezien | {len(wachtrij)} in wachtrij")
 
-    scan_interval  = getattr(config, 'SCAN_INTERVAL_MINUTEN', 30) * 60
+    scan_interval  = 30 * 60
     laatste_scrape = 0
-    cyclus         = 0
+    cyclus = 0
 
     while True:
         nu = time.time()
         cyclus += 1
 
-        # ── Feedback verwerken ──────────────────────────────────────────
-        try:
-            for pid, feedback in verwerk_feedback_updates(config):
-                data = haal_pand_op_voor_feedback(pid)
-                if data:
-                    sla_feedback_op(data["pand"], data["metrics"], data["ai_analyse"], feedback)
-                    logger.info(f"👍/👎 Feedback: {feedback} voor {pid}")
-        except Exception as e:
-            logger.error(f"Feedback fout: {e}")
+        users     = haal_actieve_users()
+        postcodes = haal_alle_postcodes(users)
 
-        # ── Scrape nieuwe panden (elke 30 min) ─────────────────────────
+        if cyclus == 1 or cyclus % 20 == 0:
+            logger.info(f"👥 {len(users)} users | {len(postcodes)} postcodes in unie")
+
+        # ── Feedback verwerken (Telegram knoppen) ─────────────────────────
+        if TELEGRAM_BOT_TOKEN:
+            try:
+                for pid, feedback in verwerk_feedback_updates_multi(TELEGRAM_BOT_TOKEN):
+                    data = haal_pand_op_voor_feedback(pid)
+                    if data:
+                        sla_feedback_op(data["pand"], data["metrics"], data["ai_analyse"], feedback)
+                        logger.info(f"👍/👎 Feedback: {feedback} → {pid}")
+            except Exception as e:
+                logger.error(f"Feedback fout: {e}")
+
+        # ── Scrape elke 30 minuten ────────────────────────────────────────
         if nu - laatste_scrape >= scan_interval:
             try:
-                geziene_ids, wachtrij = scrape_nieuwe_panden(geziene_ids, wachtrij)
+                geziene_ids, wachtrij = scrape_nieuwe_panden(geziene_ids, wachtrij, postcodes, users)
                 sla_geziene_panden_op(geziene_ids)
                 sla_wachtrij_op(wachtrij)
                 laatste_scrape = nu
             except Exception as e:
                 logger.error(f"Scrape fout: {e}")
+                stuur_fout_melding(f"Scrape fout: {str(e)[:200]}", TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID)
 
-        # ── AI analyses — zoveel als het budget toelaat ─────────────────
+        # ── AI analyses ───────────────────────────────────────────────────
         if wachtrij:
-            aantal = hoeveel_analyses_mogelijk()
-            if aantal > 0:
-                try:
-                    wachtrij = analyseer_batch(wachtrij, aantal)
-                    sla_wachtrij_op(wachtrij)
-                except Exception as e:
-                    logger.error(f"Analyse fout: {e}")
-            else:
-                logger.info(f"⏳ Token budget te laag voor analyse — wachten...")
+            try:
+                wachtrij = analyseer_batch(wachtrij, users)
+                sla_wachtrij_op(wachtrij)
+            except Exception as e:
+                logger.error(f"Analyse fout: {e}")
+                stuur_fout_melding(f"Analyse crash: {str(e)[:200]}", TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID)
 
-        # ── Status log elke 10 cycli ────────────────────────────────────
+        # ── Dagrapport (18u, automatisch) ─────────────────────────────────
+        if TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_ID:
+            try:
+                stats = tel_resultaten_vandaag()
+                stats["users"]    = len(users)
+                stats["postcodes"]= len(postcodes)
+                stats["wachtrij"] = len(wachtrij)
+                check_dagrapport(stats, TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_ID)
+            except Exception:
+                pass
+
+        # ── Status log ────────────────────────────────────────────────────
         if cyclus % 10 == 0:
-            status = budget_status(config2.TOKENS_PER_MINUUT_LIMIET, config2.TOKENS_PER_DAG_LIMIET)
-            logger.info(
-                f"📊 Status | Wachtrij: {len(wachtrij)} | "
-                f"Tokens dag: {status['dag_gebruikt']:,} ({status['dag_pct']}%) | "
-                f"Aanroepen: {status['aanroepen_vandaag']}"
-            )
+            logger.info(f"📊 Cyclus {cyclus} | Wachtrij: {len(wachtrij)} | Users: {len(users)} | Postcodes: {len(postcodes)}")
 
         time.sleep(30)
 
